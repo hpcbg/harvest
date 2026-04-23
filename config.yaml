@@ -1,0 +1,220 @@
+project:
+  name: "pilot6_smart_recharging"
+  version: "0.2"
+
+simulation:
+  start_time: "2026-06-01 00:00:00"
+  end_time: "2026-06-02 00:00:00"
+  time_step_minutes: 15
+
+grid:
+  max_power_kw: 10.5
+
+tariffs:
+  energy_periods:
+    punta:
+      intervals:
+        - {start: "10:00", end: "14:00"}
+        - {start: "18:00", end: "22:00"}
+      price_eur_per_kwh: 0.20
+    llano:
+      intervals:
+        - {start: "08:00", end: "10:00"}
+        - {start: "14:00", end: "18:00"}
+        - {start: "22:00", end: "00:00"}
+      price_eur_per_kwh: 0.17
+    valle:
+      intervals:
+        - {start: "00:00", end: "08:00"}
+      weekend_all_day_valle: true
+      price_eur_per_kwh: 0.15
+
+# ── Fixed farm PV array (ground / building-roof mounted) ─────────────────────
+pv:
+  farm_fixed_peak_kw: 5.0          # installed capacity of the fixed farm array
+  profile:                          # normalised shape (0-1), scaled by farm_fixed_peak_kw
+    0: 0.0
+    1: 0.0
+    2: 0.0
+    3: 0.0
+    4: 0.0
+    5: 0.0
+    6: 0.02
+    7: 0.04
+    8: 0.16
+    9: 0.36
+    10: 0.60
+    11: 0.84
+    12: 1.00
+    13: 1.00
+    14: 0.88
+    15: 0.64
+    16: 0.40
+    17: 0.18
+    18: 0.04
+    19: 0.0
+    20: 0.0
+    21: 0.0
+    22: 0.0
+    23: 0.0
+
+# ── Tractor roof-mounted PV panels ───────────────────────────────────────────
+tractor_pv:
+  panel_peak_w: 650                 # peak watts per tractor roof panel (600-700 W range)
+  field_derating: 0.70              # output fraction when tractor is working in field
+  parked_derating: 0.95             # output fraction when tractor is parked / charging
+
+tractors:
+  model:
+    name: "ZETRABOT"
+    battery_capacity_kwh: 44.8
+    swappable_capacity_kwh: 22.4
+    module_capacity_kwh: 5.6
+    modules_total: 8
+    modules_swappable: 4
+    max_charge_power_kw: 6.6
+    full_charge_time_h: 8
+    nominal_power_kw: 25.6
+    max_power_kw: 45.2
+    pto_power_kw: 10.0
+    max_speed_kmh: 18
+    eco_speed_kmh: 10
+    charging_efficiency: 0.95
+    driving_kwh_per_km: 0.5
+    idle_kwh_per_h: 0.3
+
+  fleet:
+    - id: "tractor_1"
+      initial_soc_percent: 80
+      initial_location: {x: 50, y: 50}
+      enabled: true
+      has_pv_roof: true
+    - id: "tractor_2"
+      initial_soc_percent: 55
+      initial_location: {x: 60, y: 50}
+      enabled: true
+      has_pv_roof: true
+    - id: "tractor_3"
+      initial_soc_percent: 30
+      initial_location: {x: 70, y: 50}
+      enabled: true
+      has_pv_roof: true
+
+charging:
+  stations:
+    - id: "charger_1"
+      location: {x: 40, y: 40}
+      max_power_kw: 6.6
+    - id: "charger_2"
+      location: {x: 45, y: 40}
+      max_power_kw: 6.6
+
+# ── Farm energy consumers ─────────────────────────────────────────────────────
+energy_consumers:
+  - id: "electric_fence"
+    power_kw: 0.2
+    priority: "critical"
+    always_on: true
+
+  - id: "irrigation_pump_morning"
+    power_kw: 3.0
+    priority: "high"
+    schedule: {start: "06:00", end: "08:00"}
+
+  - id: "irrigation_pump_evening"
+    power_kw: 3.0
+    priority: "high"
+    schedule: {start: "19:00", end: "21:00"}
+
+  - id: "barn_doors_motors"
+    power_kw: 0.5
+    priority: "normal"
+    schedule: {start: "07:00", end: "08:00"}
+
+  - id: "cold_storage"
+    power_kw: 1.2
+    priority: "high"
+    schedule: {start: "08:00", end: "20:00"}
+
+  - id: "workshop_tools"
+    power_kw: 2.5
+    priority: "normal"
+    schedule: {start: "08:00", end: "17:00"}
+
+  - id: "office_hvac"
+    power_kw: 1.5
+    priority: "low"
+    schedule: {start: "08:00", end: "18:00"}
+
+  - id: "outdoor_lighting"
+    power_kw: 0.8
+    priority: "normal"
+    schedule: {start: "20:00", end: "23:00"}
+
+  - id: "security_lighting"
+    power_kw: 0.3
+    priority: "critical"
+    schedule: {start: "22:00", end: "06:00"}
+
+# ── Scenario definitions ──────────────────────────────────────────────────────
+# charging_strategy : naive | night_only | smart | smart_with_swap
+# tractor_pv_enabled: tractor roof panels inject into site / tractor battery
+# load_shedding     : non-critical / low-priority loads shed when grid is tight
+scenarios:
+  - name: "naive"
+    charging_strategy: "naive"
+    tractor_pv_enabled: false
+    load_shedding: false
+
+  - name: "night_only"
+    charging_strategy: "night_only"
+    tractor_pv_enabled: false
+    load_shedding: false
+
+  - name: "smart"
+    charging_strategy: "smart"
+    tractor_pv_enabled: false
+    load_shedding: false
+
+  - name: "smart_with_swap"
+    charging_strategy: "smart_with_swap"
+    tractor_pv_enabled: false
+    load_shedding: false
+
+  - name: "pv_roof"
+    charging_strategy: "smart"
+    tractor_pv_enabled: true
+    load_shedding: false
+
+  - name: "pv_roof_swap"
+    charging_strategy: "smart_with_swap"
+    tractor_pv_enabled: true
+    load_shedding: false
+
+  - name: "pv_roof_shed"
+    charging_strategy: "smart"
+    tractor_pv_enabled: true
+    load_shedding: true
+
+  - name: "full_smart"
+    charging_strategy: "smart_with_swap"
+    tractor_pv_enabled: true
+    load_shedding: true
+
+scheduler:
+  objective_weights:
+    energy_cost: 1.0
+    peak_power: 3.0
+    task_delay: 2.5
+    unserved_tasks: 10.0
+    battery_stress: 1.0
+
+farm:
+  map:
+    width_m: 800
+    height_m: 500
+
+task_generation:
+  mode: "generated"
+  num_tasks: 30
+  seed: 42
