@@ -126,19 +126,24 @@ def generate_tasks(
         start = day0.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
         duration_min = rng.randint(dur_range[0], dur_range[1])
-        distance_km = rng.uniform(1.5, 8.0)
+        distance_km = rng.uniform(0.5, 4.0)  # farm 800x500m, realistic field distances
         priority = weighted_choice(priorities)
 
-        # more restrictive deadlines for urgent tasks
+        # Deadline slack = time AFTER duration ends before the window closes.
+        # Must be generous enough that a tractor finishing another task can still
+        # reach and complete this one.  Floor = max(slack_range_min, 1.5 × duration).
         if priority == "urgent":
-            deadline_slack = rng.randint(20, 60)
+            raw_slack = rng.randint(30, 90)
             can_wait = False
         elif priority == "normal":
-            deadline_slack = rng.randint(60, 180)
+            raw_slack = rng.randint(90, 240)
             can_wait = True
         else:
-            deadline_slack = rng.randint(180, 300)
+            raw_slack = rng.randint(180, 360)
             can_wait = True
+
+        # Ensure window is wide enough relative to the task itself
+        deadline_slack = max(raw_slack, int(duration_min * 1.5))
 
         pto_power_kw = rng.uniform(*pto_range) if uses_pto else 0.0
 

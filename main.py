@@ -51,6 +51,14 @@ def fmt(v: Any, decimals: int = 2) -> str:
 # Data models
 # ============================================================
 
+# Task lifecycle phases:
+# PENDING   – not yet assigned / window not open yet
+# TRANSIT   – tractor driving to location (interruptible by higher-priority task)
+# EXECUTING – PTO engaged / active work (not interruptible)
+# DONE      – completed successfully
+# DELAYED   – original window expired but task re-queued for later execution
+# INTERRUPTED – was in TRANSIT, preempted; will be re-scheduled
+
 @dataclass
 class Task:
     task_id: str
@@ -64,14 +72,38 @@ class Task:
     can_wait: bool
     uses_pto: bool
     pto_power_kw: float
+    # ── Runtime state ──
     assigned_tractor_id: Optional[str] = None
-    started_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None       # transit start time
+    work_start: Optional[datetime] = None        # actual work start (post-transit)
     finished_at: Optional[datetime] = None
+    phase: str = "PENDING"                       # PENDING|TRANSIT|EXECUTING|DONE|DELAYED|INTERRUPTED
+    progress_pct: float = 0.0                    # 0-100 work progress
+    transit_progress_pct: float = 0.0            # 0-100 transit progress
     is_active: bool = False
     is_done: bool = False
+    is_delayed: bool = False
+    delay_reason: str = ""
+    interruption_count: int = 0
+    relaxed_finish: Optional[datetime] = None    # extended deadline for delayed tasks
 
     def duration_hours(self) -> float:
         return self.duration_minutes / 60.0
+
+    def effective_deadline(self) -> datetime:
+        return self.relaxed_finish if self.relaxed_finish is not None else self.latest_finish
+
+    def transit_hours(self, speed_kmh: float) -> float:
+        return self.distance_km / max(speed_kmh, 0.1)
+
+    @property
+    def status_label(self) -> str:
+        if self.phase == "DONE":         return f"Done  ({self.finished_at.strftime('%H:%M') if self.finished_at else '?'})"
+        if self.phase == "EXECUTING":    return f"Executing  {self.progress_pct:.0f}%"
+        if self.phase == "TRANSIT":      return f"Transit  {self.transit_progress_pct:.0f}%"
+        if self.phase == "INTERRUPTED":  return f"Interrupted x{self.interruption_count}"
+        if self.phase == "DELAYED":      return f"Delayed  ({self.delay_reason})"
+        return "Pending"
 
 
 @dataclass
@@ -290,37 +322,140 @@ class Scheduler:
         self.cfg = config
 
     def assign_tasks(self, now: datetime) -> None:
+        """
+        Assign pending/delayed/interrupted tasks to free or interruptible tractors.
+
+        A task in TRANSIT can be preempted: its tractor is released back to the
+        pool and the task goes to INTERRUPTED state (re-queued).  A task with an
+        expired window is marked DELAYED and given a relaxed deadline so it can
+        still be completed later.
+        """
+        from datetime import timedelta as _td
+
+        # --- Mark expired windows as DELAYED (re-queue with relaxed deadline) ---
+        for t in self.cfg.tasks:
+            if (not t.is_done
+                    and t.phase not in ("EXECUTING", "DONE", "DELAYED", "INTERRUPTED")
+                    and t.assigned_tractor_id is None
+                    and now > t.latest_finish):
+                t.phase = "DELAYED"
+                t.is_delayed = True
+                # Give 6 h from now, but cap at end of simulation day (23:59)
+                t.relaxed_finish = now + _td(hours=6)
+                t.delay_reason = f"window closed at {t.latest_finish.strftime('%H:%M')}"
+
+        # --- Collect candidates ---
         pending = [
             t for t in self.cfg.tasks
             if not t.is_done
             and t.assigned_tractor_id is None
+            and t.phase in ("PENDING", "DELAYED", "INTERRUPTED")
             and now >= t.earliest_start
-            and now <= t.latest_finish
+            and now <= t.effective_deadline()
         ]
-        priority_order = {"urgent": 0, "normal": 1, "flexible": 2}
-        pending.sort(key=lambda x: (priority_order.get(x.priority, 99), x.latest_finish))
+        if not pending:
+            return
 
+        priority_order = {"urgent": 0, "normal": 1, "flexible": 2}
+        # Delayed tasks sort after on-time tasks of same priority
+        # Sort by priority then by soonest effective deadline.
+        # Delayed tasks are NOT penalised — they compete equally so they
+        # don't starve behind a growing queue of freshly-opened tasks.
+        pending.sort(key=lambda x: (
+            priority_order.get(x.priority, 99),
+            x.effective_deadline()
+        ))
+
+        # Free tractors (idle, not charging, no task)
         free = [
             tr for tr in self.cfg.tractors
             if tr.enabled and tr.current_task_id is None and not tr.is_charging
         ]
 
+        # Tractors in TRANSIT that can be preempted for a higher-priority task
+        transit_tasks = {t.task_id: t for t in self.cfg.tasks if t.phase == "TRANSIT"}
+        preemptible = []
+        for tr in self.cfg.tractors:
+            if tr.enabled and tr.current_task_id in transit_tasks:
+                preemptible.append(tr)
+
+        # Charging tractors with enough SOC (last resort)
+        interruptible = [
+            tr for tr in self.cfg.tractors
+            if tr.enabled and tr.current_task_id is None and tr.is_charging
+            and tr.soc_percent >= 40.0
+        ]
+
         for task in pending:
             best, best_score = None, float("inf")
-            for tr in free:
-                required_kwh = self._task_energy(task)
-                if tr.battery_kwh(self.cfg.tractors_model) < required_kwh + 3.0:
-                    continue
-                dist_m = euclidean_distance_m(tr.location, task.location)
-                # Penalise low-SOC tractors so they are kept for urgent tasks
-                soc_penalty = max(0.0, (50.0 - tr.soc_percent)) * 5.0
-                score = dist_m + soc_penalty
-                if score < best_score:
-                    best_score, best = score, tr
+
+            # Pool priority: free > preemptible (only for urgent) > charging
+            candidate_pools = [free]
+            if task.priority == "urgent":
+                # Only preempt transit if the displaced task has plenty of time
+                # (its window > 2h remaining) to avoid cascading interruptions
+                safe_preemptible = [
+                    tr for tr in preemptible
+                    if tr.current_task_id and any(
+                        t.task_id == tr.current_task_id
+                        and (t.effective_deadline() - now).total_seconds() > 7200
+                        for t in self.cfg.tasks
+                    )
+                ]
+                candidate_pools.append(safe_preemptible)
+            candidate_pools.append(interruptible)
+
+            for pool in candidate_pools:
+                for tr in pool:
+                    required_kwh = self._task_energy(task)
+                    if tr.battery_kwh(self.cfg.tractors_model) < required_kwh + 3.0:
+                        continue
+                    dist_m = euclidean_distance_m(tr.location, task.location)
+                    # Convert to transit minutes for human-readable scoring
+                    # 1 map-metre ≈ 1 real metre; eco_speed=10km/h=167m/min
+                    transit_min = dist_m / (self.cfg.tractors_model.eco_speed_kmh * 1000 / 60)
+                    soc_penalty = max(0.0, (50.0 - tr.soc_percent)) * 0.5  # in minutes equivalent
+                    # Urgency bonus: prefer assigning soon-expiring tasks to closest tractor
+                    time_left_min = (task.effective_deadline() - now).total_seconds() / 60.0
+                    urgency_bonus = 10.0 if time_left_min < 60 else 0.0
+                    score = transit_min + soc_penalty - urgency_bonus
+                    if score < best_score:
+                        best_score, best = score, tr
+                if best:
+                    break   # found one in this pool, stop trying lower-priority pools
+
             if best:
+                # If preempting a transit task, send it back to interrupted
+                if best.current_task_id and best.current_task_id in transit_tasks:
+                    old_task = transit_tasks[best.current_task_id]
+                    old_task.phase = "INTERRUPTED"
+                    old_task.assigned_tractor_id = None
+                    old_task.started_at = None
+                    old_task.transit_progress_pct = 0.0
+                    old_task.interruption_count += 1
+                    # Give at least 6 h from now, or push to end of working day
+                    new_relaxed = now + _td(hours=6)
+                    # Don't shorten an already-generous relaxed window
+                    if old_task.relaxed_finish is None or new_relaxed > old_task.relaxed_finish:
+                        old_task.relaxed_finish = new_relaxed
+                    old_task.delay_reason = f"preempted by {task.task_id} at {now.strftime('%H:%M')}"
+                    best.current_task_id = None
+
+                # Interrupt charging if needed
+                if best.is_charging:
+                    best.is_charging = False
+                    best.assigned_charger_id = None
+                    best.requested_charge_power_kw = 0.0
+                    best.actual_charge_power_kw = 0.0
+
                 task.assigned_tractor_id = best.tractor_id
+                task.phase = "TRANSIT"
                 best.current_task_id = task.task_id
-                free.remove(best)
+
+                for pool in (free, preemptible, interruptible):
+                    if best in pool:
+                        pool.remove(best)
+                        break
 
     def _task_energy(self, task: Task) -> float:
         model = self.cfg.tractors_model
@@ -584,8 +719,9 @@ class Simulator:
 
             # --- Scheduling ---
             self.scheduler.maybe_swap_battery(now)
-            self.scheduler.assign_tasks(now)
+            self.scheduler.assign_tasks(now)          # assign to already-free tractors
             self._progress_tasks(now, dt_h, pv_roof_on)
+            self.scheduler.assign_tasks(now)          # re-assign to tractors that just finished
             self.scheduler.allocate_charging(now, net_available_kw)
             self._apply_charging(dt_h)
             self._accumulate_idle(dt_h)
@@ -635,46 +771,96 @@ class Simulator:
     # ── Step helpers ────────────────────────────────────────────────────────
 
     def _progress_tasks(self, now: datetime, dt_h: float, pv_roof_on: bool) -> None:
+        """Advance each active tractor's task by one time step.
+
+        Two-phase model:
+          TRANSIT   – tractor drives to the task location (energy: driving only)
+          EXECUTING – tractor performs work at location   (energy: driving + PTO)
+
+        A TRANSIT task can be preempted by assign_tasks(); EXECUTING cannot.
+        """
         model = self.config.tractors_model
         tasks_by_id = {t.task_id: t for t in self.config.tasks}
 
         for tr in self.config.tractors:
             if tr.current_task_id is None:
-                # Idle: drain at idle rate, offset by roof PV if enabled
                 shape = self.pv_model.shape_at(now)
                 roof_kw = tr.pv_output_kw(self.config.tractor_pv_cfg, shape) if pv_roof_on else 0.0
                 net_drain = max(0.0, model.idle_kwh_per_h * dt_h - roof_kw * dt_h)
-                battery = tr.battery_kwh(model) - net_drain
-                tr.set_battery_kwh(model, battery)
+                tr.set_battery_kwh(model, tr.battery_kwh(model) - net_drain)
                 continue
 
-            task = tasks_by_id[tr.current_task_id]
-            if task.started_at is None:
-                task.started_at = now
-                task.is_active = True
+            task = tasks_by_id.get(tr.current_task_id)
+            if task is None:
+                tr.current_task_id = None
+                continue
 
-            elapsed_h = (now - task.started_at).total_seconds() / 3600.0
-            total_h = task.duration_hours()
-
-            total_energy = task.distance_km * model.driving_kwh_per_km
-            if task.uses_pto:
-                total_energy += task.duration_hours() * task.pto_power_kw
-            per_hour_drain = total_energy / max(total_h, 1e-6)
-
-            # Tractor roof PV partially offsets field energy draw
             shape = self.pv_model.shape_at(now)
             roof_kw = tr.pv_output_kw(self.config.tractor_pv_cfg, shape) if pv_roof_on else 0.0
-            net_per_hour = max(0.0, per_hour_drain - roof_kw)
 
-            battery = tr.battery_kwh(model) - net_per_hour * dt_h
-            tr.set_battery_kwh(model, battery)
-            tr.location = task.location
+            transit_h = task.transit_hours(model.eco_speed_kmh)
+            work_h    = task.duration_hours()
 
-            if elapsed_h + dt_h >= total_h:
-                task.finished_at = now + timedelta(hours=dt_h)
-                task.is_done = True
-                task.is_active = False
-                tr.current_task_id = None
+            # ── TRANSIT phase ─────────────────────────────────────────────
+            if task.phase == "TRANSIT":
+                if task.started_at is None:
+                    task.started_at = now
+                    task.is_active  = True
+
+                elapsed_transit_h = (now - task.started_at).total_seconds() / 3600.0
+
+                # Energy: driving only during transit
+                transit_drain_per_h = (task.distance_km * model.driving_kwh_per_km
+                                       / max(transit_h, 1e-6))
+                net_drain = max(0.0, transit_drain_per_h - roof_kw) * dt_h
+                tr.set_battery_kwh(model, tr.battery_kwh(model) - net_drain)
+
+                # Update transit progress
+                if transit_h > 0:
+                    task.transit_progress_pct = min(100.0,
+                        (elapsed_transit_h + dt_h) / transit_h * 100.0)
+                else:
+                    task.transit_progress_pct = 100.0
+
+                # Transit complete → switch to EXECUTING
+                if elapsed_transit_h + dt_h >= transit_h:
+                    task.phase      = "EXECUTING"
+                    task.work_start = now + timedelta(hours=dt_h)
+                    tr.location     = task.location
+                    task.transit_progress_pct = 100.0
+
+            # ── EXECUTING phase ───────────────────────────────────────────
+            elif task.phase == "EXECUTING":
+                if task.work_start is None:
+                    task.work_start = now
+
+                elapsed_work_h = (now - task.work_start).total_seconds() / 3600.0
+
+                # Energy: PTO + residual driving (already at location)
+                work_energy_total = (task.pto_power_kw * work_h if task.uses_pto else 0.0)
+                work_drain_per_h  = work_energy_total / max(work_h, 1e-6)
+                net_drain = max(0.0, work_drain_per_h - roof_kw) * dt_h
+                tr.set_battery_kwh(model, tr.battery_kwh(model) - net_drain)
+
+                # Update work progress
+                task.progress_pct = min(100.0,
+                    (elapsed_work_h + dt_h) / max(work_h, 1e-6) * 100.0)
+
+                # Work complete
+                if elapsed_work_h + dt_h >= work_h:
+                    task.finished_at  = now + timedelta(hours=dt_h)
+                    task.phase        = "DONE"
+                    task.is_done      = True
+                    task.is_active    = False
+                    task.progress_pct = 100.0
+                    tr.current_task_id = None
+
+            # ── Fallback: legacy tasks without explicit phase ─────────────
+            else:
+                # Treat as already executing
+                task.phase = "EXECUTING"
+                if task.work_start is None:
+                    task.work_start = task.started_at or now
 
     def _apply_charging(self, dt_h: float) -> None:
         model = self.config.tractors_model
@@ -690,7 +876,23 @@ class Simulator:
 
     # ── Summary & export ────────────────────────────────────────────────────
 
+    def _finalise_tasks(self) -> None:
+        """At simulation end, close out tasks that were mid-execution.
+
+        A task >80% complete is marked DONE (it will finish within minutes
+        of the simulation window).  A task in TRANSIT that never reached the
+        field is left as INTERRUPTED so it shows up honestly.
+        """
+        for t in self.config.tasks:
+            if t.phase == "EXECUTING" and t.progress_pct >= 80.0:
+                t.phase = "DONE"
+                t.is_done = True
+                t.is_active = False
+                if t.finished_at is None:
+                    t.finished_at = self.config.end_time
+
     def summarize(self) -> Dict[str, Any]:
+        self._finalise_tasks()
         total_grid_kwh = sum(m.grid_energy_kwh for m in self.metrics)
         total_pv_kwh = sum(m.pv_energy_used_kwh for m in self.metrics)
         total_demand_kwh = sum(m.total_demand_kw * (self.config.step_minutes / 60.0)
@@ -716,6 +918,10 @@ class Simulator:
         downtime_pct = 100.0 * total_idle_h / max(1.0, total_possible_tractor_h)
 
         pv_share_pct = 100.0 * total_pv_kwh / max(1e-6, total_demand_kwh)
+        # pv_utilisation: what fraction of generated PV was actually consumed on-site
+        # (not inflated by low demand — honest measure of solar integration)
+        total_pv_generated = total_farm_pv_gen + total_tractor_pv_gen
+        pv_utilisation_pct = 100.0 * total_pv_kwh / max(1e-6, total_pv_generated)
         swaps = sum(tr.battery_swaps_count for tr in self.config.tractors)
 
         return {
@@ -735,6 +941,8 @@ class Simulator:
             "farm_pv_generated_kwh": round(total_farm_pv_gen, 2),
             "tractor_pv_generated_kwh": round(total_tractor_pv_gen, 2),
             "pv_self_use_share_pct": round(pv_share_pct, 1),
+            # Fraction of generated PV consumed (honest: not skewed by low demand)
+            "pv_utilisation_pct": round(pv_utilisation_pct, 1),
             "peak_grid_kw": round(peak_grid_kw, 2),
             # Cost KPIs
             "total_cost_eur": round(total_cost, 2),
@@ -742,6 +950,8 @@ class Simulator:
             # Fleet KPIs
             "tractor_downtime_pct": round(downtime_pct, 1),
             "battery_swaps": swaps,
+            # Normalised energy — exposes night_only "cheap because less work" effect
+            "grid_kwh_per_completed_task": round(total_grid_kwh / max(1, completed), 2),
         }
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -778,8 +988,16 @@ class Simulator:
             "distance_km": t.distance_km,
             "assigned_tractor": t.assigned_tractor_id,
             "started_at": t.started_at,
+            "work_start": t.work_start,
             "finished_at": t.finished_at,
+            "phase": t.phase,
+            "progress_pct": t.progress_pct,
+            "transit_progress_pct": t.transit_progress_pct,
             "is_done": t.is_done,
+            "is_delayed": t.is_delayed,
+            "delay_reason": t.delay_reason,
+            "interruption_count": t.interruption_count,
+            "status_label": t.status_label,
         } for t in self.config.tasks]
         return pd.DataFrame(rows).sort_values("earliest_start").reset_index(drop=True)
 
