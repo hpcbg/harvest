@@ -58,4 +58,8 @@ perception/vision/datasets/
 runs/
 yolo*
 
+# ML
+runs/
+*.npz
+
 !images/*.png

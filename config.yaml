@@ -215,3 +215,45 @@ task_generation:
   mode: generated
   num_tasks: 20
   seed: 42
+prediction:
+  pv:
+    backend: static
+    means_h:
+    - 12.0
+    stds_h:
+    - 2.5
+    weights_h:
+    - 0.05
+    - 10.0
+    noise_frac: 0.08
+  load:
+    means_h:
+    - 7.0
+    - 13.0
+    - 20.0
+    stds_h:
+    - 1.0
+    - 2.0
+    - 1.0
+    weights_h:
+    - 1.0
+    - 5.0
+    - 3.0
+    - 4.0
+    means_d:
+    - 2.0
+    stds_d:
+    - 1.0
+    weights_d:
+    - 1.0
+    - 5.0
+    noise_frac: 0.1
+  training:
+    train_weeks: 12
+    test_weeks: 5
+    seed_train: 42
+    seed_test: 99
+    hidden_units:
+    - 50
+    epochs: 2000
+    dropout: null

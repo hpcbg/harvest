@@ -14,6 +14,11 @@ import matplotlib.ticker as mticker
 from matplotlib.gridspec import GridSpec
 
 from task_generator import generate_tasks
+try:
+    from predictor import build_predictors, ForecastBundle
+    _PREDICTOR_AVAILABLE = True
+except ImportError:
+    _PREDICTOR_AVAILABLE = False
 
 
 # ============================================================
@@ -287,17 +292,34 @@ class TariffModel:
 # ============================================================
 
 class PVModel:
-    """Handles both the fixed farm array and per-tractor roof panels."""
+    """
+    Handles both the fixed farm array and per-tractor roof panels.
 
-    def __init__(self, normalised_profile: Dict[int, float], farm_fixed_peak_kw: float) -> None:
+    Accepts an optional BasePVPredictor backend.  When a predictor is
+    supplied (e.g. NNPVPredictor, OpenMeteoPVPredictor) it replaces the
+    static hourly profile for shape_at().  When None the original static
+    profile dict is used — full backward compatibility.
+    """
+
+    def __init__(
+        self,
+        normalised_profile: Dict[int, float],
+        farm_fixed_peak_kw: float,
+        predictor=None,   # Optional[BasePVPredictor]
+    ) -> None:
         self.profile = normalised_profile
         self.farm_fixed_peak_kw = farm_fixed_peak_kw
+        self._predictor = predictor   # None → use static profile
 
     def shape_at(self, now: datetime) -> float:
         """Normalised irradiance 0-1 for this hour."""
+        if self._predictor is not None:
+            return float(self._predictor.predict_shape(now))
         return float(self.profile.get(now.hour, 0.0))
 
     def farm_fixed_kw(self, now: datetime) -> float:
+        if self._predictor is not None:
+            return float(self._predictor.predict_farm_kw(now))
         return self.farm_fixed_peak_kw * self.shape_at(now)
 
     def tractor_fleet_kw(
@@ -577,10 +599,21 @@ class Simulator:
         self.config = self._build_config()
         self.scheduler = Scheduler(self.config)
         self.tariff = TariffModel(config_dict)
+        # Build PV predictor — uses prediction module if available and configured
+        _pv_predictor  = None
+        _load_predictor = None
+        if _PREDICTOR_AVAILABLE:
+            try:
+                _pv_predictor, _load_predictor = build_predictors(self.raw)
+            except Exception as _e:
+                pass  # fall back to static on any error
+
         self.pv_model = PVModel(
             normalised_profile={int(k): float(v) for k, v in self.raw["pv"]["profile"].items()},
             farm_fixed_peak_kw=float(self.raw["pv"]["farm_fixed_peak_kw"]),
+            predictor=_pv_predictor,
         )
+        self._load_predictor = _load_predictor
         self.metrics: List[StepMetrics] = []
 
     # ── Config builder ──────────────────────────────────────────────────────

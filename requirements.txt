@@ -1,0 +1,13 @@
+# HARVEST — pilot6 smart recharging
+# Install with: pip install -r requirements.txt
+ 
+# Core simulation (always required)
+numpy>=1.24
+scipy>=1.10
+pyyaml>=6.0
+pandas>=1.5
+matplotlib>=3.6
+ 
+# Prediction module — neural network backend (optional)
+# Required only when using prediction.pv.backend: nn
+# tensorflow>=2.12
