@@ -25,6 +25,7 @@ harvest/
 ├── server.py                 # Local HTTP server bridging dashboard <-> simulation
 ├── dashboard.html            # Self-contained web UI (zero external dependencies)
 ├── requirements.txt          # Python dependencies
+├── generate_prediction_overview.py  # Regenerates images/prediction_overview.png
 └── predictor/                # Prediction module (TPI3)
     ├── __init__.py           #   build_predictors() factory + public API
     ├── base.py               #   Abstract base classes (BasePVPredictor, BaseLoadPredictor)
@@ -101,6 +102,12 @@ The browser opens automatically. The dashboard is fully self-contained — Chart
 The `predictor/` package satisfies **TPI3** (AI prediction module, target ≤25% MAPE) and provides the foundation for future MARL-based pro-active scheduling.
 
 [![Prediction overview](./images/prediction_overview.png)](./images/prediction_overview.png)
+
+> **Regenerate this image** after changing `config.yaml` (e.g. PV peak, consumers, tariffs):
+> ```bash
+> python generate_prediction_overview.py
+> ```
+> Output: `images/prediction_overview.png`
 
 The four panels above show:
 
