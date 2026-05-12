@@ -56,10 +56,7 @@ perception/vision/datasets/
 
 # ML
 runs/
-yolo*
-
-# ML
-runs/
+models/
 *.npz
 
 !images/*.png

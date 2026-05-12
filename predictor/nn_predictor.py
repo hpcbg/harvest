@@ -185,8 +185,15 @@ class NNTrainer:
             verbose=1,
         )
 
-        save_path = output_dir / model_name
-        model.save(save_path)
+        # Keras 3.x requires an explicit extension.
+        # .keras is the recommended native format; .h5 for legacy TF/Keras 2.
+        save_path = output_dir / (model_name + ".keras")
+        try:
+            model.save(save_path)
+        except Exception:
+            # Fall back to .h5 for older Keras / TF versions
+            save_path = output_dir / (model_name + ".h5")
+            model.save(str(save_path))
         logger.info("Model saved to %s", save_path)
 
         # Quick MAPE report
@@ -214,8 +221,16 @@ class _NNBase:
     def _get_model(self):
         if self._model is None:
             import tensorflow as tf
-            self._model = tf.keras.models.load_model(self._model_path)
-            logger.info("Loaded NN predictor from %s", self._model_path)
+            path = self._model_path
+            # Accept both bare name and explicit .keras / .h5 paths
+            if not path.suffix:
+                for ext in (".keras", ".h5"):
+                    candidate = path.with_suffix(ext)
+                    if candidate.exists():
+                        path = candidate
+                        break
+            self._model = tf.keras.models.load_model(path)
+            logger.info("Loaded NN predictor from %s", path)
         return self._model
 
     def _predict_raw(self, now: datetime) -> np.ndarray:

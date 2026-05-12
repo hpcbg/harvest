@@ -1,7 +1,7 @@
 # HARVEST
 
 **Hybrid Agricultural Renewable Via Energy Storage**  
-Cloud–Edge–IoT orchestration framework for energy-aware agricultural systems — intelligent coordination of electric tractors, PV generation, batteries and smart farm infrastructure.
+Cloud–Edge–IoT orchestration framework for energy-aware agricultural systems - intelligent coordination of electric tractors, PV generation, batteries and smart farm infrastructure.
 
 > O-CEI 1st Open Call · Challenge P6C1 · High Performance Creators (HPC Bulgaria)
 
@@ -11,7 +11,7 @@ Cloud–Edge–IoT orchestration framework for energy-aware agricultural systems
 
 HARVEST is a CEI energy orchestration system for smart agriculture. It enables coordinated management of electric tractor fleets (ZETRABOT), renewable energy (PV), battery storage, and distributed farm IoT loads through a unified, vendor-agnostic platform.
 
-The current repository contains the **pilot6 simulation engine** — a Python-based discrete-time simulator used to develop, validate and demonstrate charging strategies and energy management logic ahead of real hardware integration.
+The current repository contains the **pilot6 simulation engine** - a Python-based discrete-time simulator used to develop, validate and demonstrate charging strategies and energy management logic ahead of real hardware integration.
 
 ---
 
@@ -127,7 +127,7 @@ prediction:
     backend: stub        # seasonal bell curve, no dependencies, fully offline
     backend: openmeteo   # live weather forecast (free, no API key, needs internet)
     backend: nn          # trained neural network (requires TPI3 training step below)
-    model_path: models/harvest_nn_hu50_ep2000_dropNone   # for nn backend
+    model_path: models/harvest_nn_hu50_ep2000_dropNone.keras   # for nn backend
 ```
 
 | Backend | When to use | Internet | TensorFlow |
@@ -139,7 +139,7 @@ prediction:
 
 ### Training the neural network (TPI3)
 
-The architecture directly mirrors the paper *"Using Neural Network for Predicting the Load of Conveyor Systems"* (Tsvetanov et al.) — a single hidden-layer FFNN with ReLU activations, Xavier initialisation, and Adamax optimiser. The key additions for HARVEST are a third input feature (`month`) to capture seasonal PV variation, and two outputs: `pv_shape` (normalised 0–1 irradiance) and `farm_load_kw`.
+The architecture directly mirrors the paper *"Using Neural Network for Predicting the Load of Conveyor Systems"* (Tsvetanov et al.) - a single hidden-layer FFNN with ReLU activations, Xavier initialisation, and Adamax optimiser. The key additions for HARVEST are a third input feature (`month`) to capture seasonal PV variation, and two outputs: `pv_shape` (normalised 0–1 irradiance) and `farm_load_kw`.
 
 ```bash
 # 1. Generate training and test datasets from synthetic data
@@ -148,6 +148,7 @@ python -m predictor.synthetic --weeks 5  --seed 99 --output test.npz
 
 # 2. Train (50 hidden units — best result in the paper)
 pip install tensorflow
+# bash / macOS / Linux:
 python -m predictor.nn_predictor \
     --train  train.npz     \
     --test   test.npz      \
@@ -155,12 +156,48 @@ python -m predictor.nn_predictor \
     --epochs 2000          \
     --out    models/
 
+# PowerShell (Windows) — use backtick ` for line continuation:
+python -m predictor.nn_predictor `
+    --train  train.npz `
+    --test   test.npz  `
+    --hidden 50        `
+    --epochs 2000      `
+    --out    models/
+
 # 3. Enable in config.yaml
 #    prediction.pv.backend: nn
-#    prediction.pv.model_path: models/harvest_nn_hu50_ep2000_dropNone
+#    prediction.pv.model_path: models/harvest_nn_hu50_ep2000_dropNone.keras
 ```
 
-The training script prints MAPE per output at the end. A 50-HU network on 12 weeks of synthetic data consistently meets the ≤25% MAPE target (TPI3). A `*_loss.csv` file is also written alongside the model for loss curve analysis.
+The training script prints MAPE per output at the end. A `*_loss.csv` file is also written alongside the model for loss curve analysis.
+
+> **Note on MAPE results:** `farm_load_kw` consistently meets the ≤25% TPI3 target (~23%). `pv_shape` MAPE is higher with synthetic data because the generator uses a scaled mixture model — it will improve significantly once real PV measurements from the pilot site are used for training.
+
+### After training — activating the model
+
+After training completes, the model is saved to `models/`. Activate it in `config.yaml`:
+
+```yaml
+prediction:
+  pv:
+    backend: nn
+    model_path: models/harvest_nn_hu50_ep2000_dropNone.keras
+```
+
+Then run the simulation or dashboard as normal — the NN predictor replaces the static profile automatically:
+
+```bash
+python main.py          # CLI
+python server.py        # Dashboard
+```
+
+To verify the model is loaded, check the startup output:
+
+```
+PV predictor:  NNPVPredictor
+```
+
+To switch back to the static profile at any time, set `backend: static` in `config.yaml`.
 
 ### Using `ForecastBundle` for pro-active scheduling
 
@@ -286,7 +323,7 @@ prediction:
 | Web Dashboard | ✅ Done | `server.py` + `dashboard.html` |
 | TPI1 Predictive Scheduling | ✅ Pass | ≥14% cost reduction vs naive baseline |
 | TPI2 Autonomous Decisions | ✅ Pass | 100% autonomous across all scenarios |
-| TPI3 AI Prediction Module | 🔄 Partial | Architecture done; NN training requires calibrated data |
+| TPI3 AI Prediction Module | 🔄 Partial | farm_load MAPE 22.98% ✓ · pv_shape needs real PV data |
 | T3.1 FIWARE NGSI-LD Layer | ⬜ Pending | Digital twin adapter planned |
 | T3.2 ROS2 Agro-Robotics | ⬜ Pending | ZETRABOT interface planned |
 | T3.4 MARL Engine | ⬜ Pending | PPO agents to replace rule-based scheduler |
