@@ -23,7 +23,7 @@ from typing import Any, Dict, List
 
 # ── Import the simulation engine from the same directory ──────────────────────
 try:
-    from main import Simulator, ScenarioDef, load_yaml
+    from main import Simulator, ScenarioDef, load_yaml, load_yaml_with_local
 except ImportError as exc:
     sys.exit(
         f"Could not import main.py: {exc}\n"
@@ -207,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/config":
             # Return current config as JSON so dashboard can read defaults
             try:
-                cfg = load_yaml(CONFIG_FILE)
+                cfg = load_yaml_with_local(CONFIG_FILE)
                 self._send_json(cfg)
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
@@ -240,7 +240,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            base_cfg = load_yaml(CONFIG_FILE)
+            base_cfg = load_yaml_with_local(CONFIG_FILE)
             cfg      = build_config_override(base_cfg, params)
             results  = run_scenarios(cfg, scenario_defs)
             self._send_json({"results": results})

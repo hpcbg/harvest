@@ -233,10 +233,26 @@ class _NNBase:
             logger.info("Loaded NN predictor from %s", path)
         return self._model
 
+    def _predict_day_raw(self, day) -> np.ndarray:
+        """
+        Predict all 24 hours of a day in a single model call.
+        Returns array of shape (24, 2): [pv_shape, farm_load_kw] per hour.
+        Cached per calendar day to avoid repeated TF overhead.
+        """
+        key = day.isoformat() if hasattr(day, 'isoformat') else str(day)
+        if not hasattr(self, '_raw_cache'):
+            self._raw_cache = {}
+        if key not in self._raw_cache:
+            d = day if hasattr(day, 'year') else day
+            month = d.month
+            weekday = d.weekday()
+            x = np.array([[h, weekday, month] for h in range(24)], dtype="float32")
+            self._raw_cache[key] = self._get_model().predict(x, verbose=0)
+        return self._raw_cache[key]
+
     def _predict_raw(self, now: datetime) -> np.ndarray:
-        """Return raw 2-output array [pv_shape, farm_load_kw]."""
-        x = np.array([[now.hour, now.weekday(), now.month]], dtype="float32")
-        return self._get_model().predict(x, verbose=0)[0]
+        """Return raw 2-output array [pv_shape, farm_load_kw] for a single timestamp."""
+        return self._predict_day_raw(now.date())[now.hour]
 
 
 class NNPVPredictor(BasePVPredictor, _NNBase):

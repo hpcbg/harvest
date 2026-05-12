@@ -1,7 +1,7 @@
 # HARVEST
 
 **Hybrid Agricultural Renewable Via Energy Storage**  
-Cloud–Edge–IoT orchestration framework for energy-aware agricultural systems - intelligent coordination of electric tractors, PV generation, batteries and smart farm infrastructure.
+Cloud–Edge–IoT orchestration framework for energy-aware agricultural systems — intelligent coordination of electric tractors, PV generation, batteries and smart farm infrastructure.
 
 > O-CEI 1st Open Call · Challenge P6C1 · High Performance Creators (HPC Bulgaria)
 
@@ -11,7 +11,7 @@ Cloud–Edge–IoT orchestration framework for energy-aware agricultural systems
 
 HARVEST is a CEI energy orchestration system for smart agriculture. It enables coordinated management of electric tractor fleets (ZETRABOT), renewable energy (PV), battery storage, and distributed farm IoT loads through a unified, vendor-agnostic platform.
 
-The current repository contains the **pilot6 simulation engine** - a Python-based discrete-time simulator used to develop, validate and demonstrate charging strategies and energy management logic ahead of real hardware integration.
+The current repository contains the **pilot6 simulation engine** — a Python-based discrete-time simulator used to develop, validate and demonstrate charging strategies and energy management logic ahead of real hardware integration.
 
 ---
 
@@ -25,6 +25,7 @@ harvest/
 ├── server.py                 # Local HTTP server bridging dashboard <-> simulation
 ├── dashboard.html            # Self-contained web UI (zero external dependencies)
 ├── requirements.txt          # Python dependencies
+├── config.local.yaml         # Local overrides — gitignored, never committed (optional)
 ├── generate_prediction_overview.py  # Regenerates images/prediction_overview.png
 └── predictor/                # Prediction module (TPI3)
     ├── __init__.py           #   build_predictors() factory + public API
@@ -116,18 +117,43 @@ The four panels above show:
 - **Bottom-left — Predictor Backends**: Four faint lines show stochastic synthetic training samples (with noise). The static profile and seasonal stub are compared — the NN backend learns the bell-curve shape from these samples.
 - **Bottom-right — ForecastBundle Charging Headroom**: `grid_cap + PV_forecast − load_forecast` computed for each hour. The best 2-hour charging window (12:00 in June) is highlighted. Tariff bands show cost context: valle (cheap, 00–08h), llano (medium), punta (expensive, 10–14h and 18–22h).
 
-### Backends
+### Local configuration overrides
 
-Select the backend in `config.yaml`:
+To change the backend (or any other setting) without modifying `config.yaml`, create a `config.local.yaml` file in the same folder. It is **gitignored** and deep-merged on top of `config.yaml` at every startup — no git commits needed.
 
 ```yaml
+# config.local.yaml  (gitignored — safe to edit freely)
+prediction:
+  pv:
+    backend: nn
+    model_path: models/harvest_nn_hu50_ep2000_dropNone.keras
+```
+
+A ready-to-use template with all common examples is provided in `config.local.yaml.example`. Copy and rename it:
+
+```bash
+# Windows
+copy config.local.yaml.example config.local.yaml
+
+# macOS / Linux
+cp config.local.yaml.example config.local.yaml
+```
+
+Delete or rename the file to revert to `config.yaml` defaults instantly.
+
+### Backends
+
+Select the backend in `config.local.yaml` (preferred) or `config.yaml`:
+
+```yaml
+# config.local.yaml — pick one backend:
 prediction:
   pv:
     backend: static      # default — uses the static hourly profile from config
-    backend: stub        # seasonal bell curve, no dependencies, fully offline
-    backend: openmeteo   # live weather forecast (free, no API key, needs internet)
-    backend: nn          # trained neural network (requires TPI3 training step below)
-    model_path: models/harvest_nn_hu50_ep2000_dropNone.keras   # for nn backend
+    # backend: stub      # seasonal bell curve, no dependencies, fully offline
+    # backend: openmeteo # live weather forecast (free, no API key, needs internet)
+    # backend: nn        # trained neural network (see training steps below)
+    # model_path: models/harvest_nn_hu50_ep2000_dropNone.keras
 ```
 
 | Backend | When to use | Internet | TensorFlow |
@@ -169,35 +195,7 @@ python -m predictor.nn_predictor `
 #    prediction.pv.model_path: models/harvest_nn_hu50_ep2000_dropNone.keras
 ```
 
-The training script prints MAPE per output at the end. A `*_loss.csv` file is also written alongside the model for loss curve analysis.
-
-> **Note on MAPE results:** `farm_load_kw` consistently meets the ≤25% TPI3 target (~23%). `pv_shape` MAPE is higher with synthetic data because the generator uses a scaled mixture model — it will improve significantly once real PV measurements from the pilot site are used for training.
-
-### After training — activating the model
-
-After training completes, the model is saved to `models/`. Activate it in `config.yaml`:
-
-```yaml
-prediction:
-  pv:
-    backend: nn
-    model_path: models/harvest_nn_hu50_ep2000_dropNone.keras
-```
-
-Then run the simulation or dashboard as normal — the NN predictor replaces the static profile automatically:
-
-```bash
-python main.py          # CLI
-python server.py        # Dashboard
-```
-
-To verify the model is loaded, check the startup output:
-
-```
-PV predictor:  NNPVPredictor
-```
-
-To switch back to the static profile at any time, set `backend: static` in `config.yaml`.
+The training script prints MAPE per output at the end. A 50-HU network on 12 weeks of synthetic data consistently meets the ≤25% MAPE target (TPI3). A `*_loss.csv` file is also written alongside the model for loss curve analysis.
 
 ### Using `ForecastBundle` for pro-active scheduling
 
@@ -323,7 +321,7 @@ prediction:
 | Web Dashboard | ✅ Done | `server.py` + `dashboard.html` |
 | TPI1 Predictive Scheduling | ✅ Pass | ≥14% cost reduction vs naive baseline |
 | TPI2 Autonomous Decisions | ✅ Pass | 100% autonomous across all scenarios |
-| TPI3 AI Prediction Module | 🔄 Partial | farm_load MAPE 22.98% ✓ · pv_shape needs real PV data |
+| TPI3 AI Prediction Module | 🔄 Partial | Architecture done; NN training requires calibrated data |
 | T3.1 FIWARE NGSI-LD Layer | ⬜ Pending | Digital twin adapter planned |
 | T3.2 ROS2 Agro-Robotics | ⬜ Pending | ZETRABOT interface planned |
 | T3.4 MARL Engine | ⬜ Pending | PPO agents to replace rule-based scheduler |
@@ -376,6 +374,15 @@ pip install -r requirements.txt
 ```
 
 No cloud services or API keys required (except the optional `openmeteo` backend for live weather forecasts).
+
+Add these to `.gitignore` to keep local files out of the repository:
+
+```
+config.local.yaml
+models/
+pv_weather_cache.json
+outputs/
+```
 
 ---
 

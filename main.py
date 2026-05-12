@@ -1296,6 +1296,48 @@ def load_yaml(path: str | Path) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def load_yaml_with_local(path: str | Path) -> Dict[str, Any]:
+    """
+    Load config.yaml and deep-merge config.local.yaml on top if it exists.
+
+    config.local.yaml is gitignored and lets you override any setting
+    (e.g. prediction backend, num_tasks, seed) without touching the
+    tracked config.yaml.
+
+    Example config.local.yaml:
+        prediction:
+          pv:
+            backend: nn
+            model_path: models/harvest_nn_hu50_ep2000_dropNone.keras
+        task_generation:
+          num_tasks: 10
+    """
+    import copy
+
+    base = load_yaml(path)
+
+    local_path = Path(path).parent / "config.local.yaml"
+    if not local_path.exists():
+        return base
+
+    local = load_yaml(local_path)
+    if not local:
+        return base
+
+    def _deep_merge(base: dict, override: dict) -> dict:
+        result = copy.deepcopy(base)
+        for k, v in override.items():
+            if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+                result[k] = _deep_merge(result[k], v)
+            else:
+                result[k] = copy.deepcopy(v)
+        return result
+
+    merged = _deep_merge(base, local)
+    print(f"  [config] Loaded overrides from config.local.yaml")
+    return merged
+
+
 # ============================================================
 # Main
 # ============================================================
@@ -1305,7 +1347,7 @@ def main() -> None:
     outputs_dir = Path("outputs")
     ensure_dir(outputs_dir)
 
-    config = load_yaml(config_path)
+    config = load_yaml_with_local(config_path)
     print_farm_banner(config)
 
     # Build scenario definitions from config

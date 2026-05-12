@@ -45,6 +45,7 @@ class BasePVPredictor(ABC):
 
     def __init__(self, farm_fixed_peak_kw: float) -> None:
         self.farm_fixed_peak_kw = farm_fixed_peak_kw
+        self._day_cache: Dict[str, Dict[int, float]] = {}
 
     @abstractmethod
     def predict_shape(self, now: datetime) -> float:
@@ -63,13 +64,21 @@ class BasePVPredictor(ABC):
         """
         Return a dict mapping hour (0-23) to normalised shape value.
 
-        Default implementation calls ``predict_shape`` 24 times.
-        Override for efficiency if the backend supports batch queries.
+        Results are cached per calendar day so TensorFlow (and any other
+        expensive backend) is invoked at most 24 times per simulation day
+        instead of once per 15-min time step.
         """
-        return {
-            h: self.predict_shape(datetime(day.year, day.month, day.day, h))
-            for h in range(24)
-        }
+        key = day.isoformat()
+        if key not in self._day_cache:
+            self._day_cache[key] = {
+                h: self.predict_shape(datetime(day.year, day.month, day.day, h))
+                for h in range(24)
+            }
+        return self._day_cache[key]
+
+    def predict_shape_cached(self, now: datetime) -> float:
+        """predict_shape with day-level cache — use this in hot simulation loops."""
+        return self.predict_day(now.date()).get(now.hour, 0.0)
 
     def mape(self, actuals: Dict[int, float], predicted: Dict[int, float]) -> float:
         """Mean Absolute Percentage Error — useful for TPI3 validation."""

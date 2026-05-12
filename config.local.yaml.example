@@ -1,0 +1,31 @@
+# config.local.yaml
+# ==================
+# Local overrides — NOT committed to git (listed in .gitignore).
+# Deep-merged on top of config.yaml at startup.
+# Create this file to change any setting without touching config.yaml.
+#
+# Common use cases:
+#   - Switch prediction backend without a git commit
+#   - Point to a locally trained model
+#   - Reduce task count for quick testing
+#   - Change the simulation date range
+#
+# Remove or rename this file to revert to config.yaml defaults.
+
+# Example: activate the trained NN predictor
+prediction:
+  pv:
+    backend: nn
+    model_path: models/harvest_nn_hu50_ep2000_dropNone.keras
+
+# Example: quick test run
+# task_generation:
+#   num_tasks: 5
+#   seed: 1
+
+# Example: use live weather forecast
+# prediction:
+#   pv:
+#     backend: openmeteo
+#     latitude: 41.69
+#     longitude: 23.31
