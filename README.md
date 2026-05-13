@@ -62,6 +62,10 @@ The power flow of the `full_smart` scenario:
 
 [![Power profile](./images/full_smart_detail.png)](./images/full_smart_detail.png)
 
+Scenario KPI comparison:
+
+[![KPI Comparison](./images/kpi_comparison.png)](./kpi_comparison.png)
+
 ### Option B — Web Dashboard (recommended for demos)
 
 ```bash
@@ -374,15 +378,6 @@ pip install -r requirements.txt
 ```
 
 No cloud services or API keys required (except the optional `openmeteo` backend for live weather forecasts).
-
-Add these to `.gitignore` to keep local files out of the repository:
-
-```
-config.local.yaml
-models/
-pv_weather_cache.json
-outputs/
-```
 
 ---
 
