@@ -1000,6 +1000,10 @@ class Simulator:
             "charging_strategy": self.scenario_def.charging_strategy,
             "tractor_pv": self.scenario_def.tractor_pv_enabled,
             "load_shedding": self.scenario_def.load_shedding,
+            "use_marl": self.scenario_def.use_marl,
+            "marl_tractor_agents": len(self.marl_engine.tractor_agents) if self.marl_engine else 0,
+            "marl_charger_agents": len(self.marl_engine.charger_agents) if self.marl_engine else 0,
+            "marl_load_agents": len(self.marl_engine.load_agents) if self.marl_engine else 0,
             # Task KPIs
             "total_tasks": total_tasks,
             "completed_tasks": completed,

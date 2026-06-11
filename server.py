@@ -121,6 +121,7 @@ def run_scenarios(
             charging_strategy=sd["charging_strategy"],
             tractor_pv_enabled=bool(sd.get("tractor_pv_enabled", False)),
             load_shedding=bool(sd.get("load_shedding", False)),
+            use_marl=bool(sd.get("use_marl", False)),
         )
         sim = Simulator(cfg, sdef)
         sim.run()

@@ -80,6 +80,15 @@
     .tag{display:inline-block;font-size:8px;font-family:var(--mono);padding:1px 4px;border-radius:3px;margin-left:3px;vertical-align:middle}
     .tpv{background:var(--green-lt);color:var(--green)}
     .tsh{background:var(--blue-lt);color:var(--blue)}
+    .tmarl{background:#F0E6FF;color:#7B2FBE}
+    [data-theme="dark"] .tmarl{background:#1e0a33;color:#c97ef0}
+    .marl-panel{background:var(--bg2);border:1px solid #c4a0e8;border-radius:var(--rl);padding:14px 16px;font-size:12px}
+    [data-theme="dark"] .marl-panel{border-color:#4a1d7a}
+    .marl-panel-title{font-size:13px;font-weight:500;color:#7B2FBE;margin-bottom:8px}
+    [data-theme="dark"] .marl-panel-title{color:#c97ef0}
+    .marl-agents{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+    .marl-agent-chip{display:inline-flex;align-items:center;gap:5px;background:var(--bg3);border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:10px;font-family:var(--mono)}
+    .marl-agent-dot{width:6px;height:6px;border-radius:50%}
     .run-btn{width:100%;padding:13px;border-radius:var(--r);background:var(--amber);color:#fff;border:none;cursor:pointer;font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:.08em;transition:opacity .15s;display:flex;align-items:center;justify-content:center;gap:8px}
     .run-btn:hover{opacity:.88}
     .run-btn:disabled{opacity:.35;cursor:not-allowed}
@@ -271,20 +280,22 @@ const SCS=[
   {id:'pv_roof_swap',label:'PV roof + swap', charging_strategy:'smart_with_swap',tractor_pv_enabled:true, load_shedding:false},
   {id:'pv_roof_shed',label:'PV roof + shed', charging_strategy:'smart',          tractor_pv_enabled:true, load_shedding:true },
   {id:'full_smart',  label:'Full smart',     charging_strategy:'smart_with_swap',tractor_pv_enabled:true, load_shedding:true },
+  {id:'marl',        label:'MARL agents',    charging_strategy:'marl',           tractor_pv_enabled:true, load_shedding:false, use_marl:true},
 ];
-const SC_COL={naive:'#888780',night_only:'#378ADD',smart:'#BA7517',smart_swap:'#EF9F27',pv_roof:'#3B6D11',pv_roof_swap:'#72b52a',pv_roof_shed:'#1D9E75',full_smart:'#0F6E56'};
+const SC_COL={naive:'#888780',night_only:'#378ADD',smart:'#BA7517',smart_swap:'#EF9F27',pv_roof:'#3B6D11',pv_roof_swap:'#72b52a',pv_roof_shed:'#1D9E75',full_smart:'#0F6E56',marl:'#7B2FBE'};
 const params={grid:10.5,pv:5.0,panel:650,tr:3,ch:2,cpwr:6.6,bat:44.8,tasks:20,seed:42};
 function upd(k,v,u){const n=parseFloat(v);params[k]=n;document.getElementById('v-'+k).textContent=(Number.isInteger(n)?n:n.toFixed(1))+(u?' '+u:'');}
 
-let active=new Set(['naive','smart','pv_roof','full_smart']);
+let active=new Set(['naive','smart','pv_roof','full_smart','marl']);
 const scg=document.getElementById('scg');
 SCS.forEach(s=>{
   const el=document.createElement('div');
   el.className='sc-pill'+(active.has(s.id)?' active':'');el.id='p-'+s.id;
-  const pvTag  = s.tractor_pv_enabled ? '<span class="tag tpv">PV</span>'   : '';
-  const shTag  = s.load_shedding      ? '<span class="tag tsh">shed</span>' : '';
-  el.innerHTML = '<span class="sn">' + s.label + pvTag + shTag + '</span>'
-               + '<span class="st">' + s.charging_strategy + '</span>';
+  const pvTag   = s.tractor_pv_enabled ? '<span class="tag tpv">PV</span>'     : '';
+  const shTag   = s.load_shedding      ? '<span class="tag tsh">shed</span>'   : '';
+  const marlTag = s.use_marl           ? '<span class="tag tmarl">MARL</span>' : '';
+  el.innerHTML = '<span class="sn">' + s.label + pvTag + shTag + marlTag + '</span>'
+               + '<span class="st">' + (s.use_marl ? 'multi-agent RL' : s.charging_strategy) + '</span>';
   el.onclick=()=>{active.has(s.id)?active.delete(s.id):active.add(s.id);el.classList.toggle('active',active.has(s.id));};
   scg.appendChild(el);
 });
@@ -413,6 +424,35 @@ function renderResults(data){
       <div class="kpi-card"><div class="kpi-label">Best grid efficiency</div><div class="kpi-val">${bestEff.grid_kwh_per_completed_task.toFixed(1)}<span class="kpi-unit">kWh/task</span></div><div class="kpi-delta dg">grid kWh ÷ tasks done · ${bestEff.scenario}</div></div>
     </div>`);
 
+  // MARL agents panel
+  const marlResult=data.find(d=>d.use_marl);
+  if(marlResult){
+    const trAgents=marlResult.marl_tractor_agents||0;
+    const chAgents=marlResult.marl_charger_agents||0;
+    const ldAgents=marlResult.marl_load_agents||0;
+    const total=trAgents+chAgents+ldAgents;
+    const chips=[]
+      .concat(Array.from({length:trAgents},(_,i)=>`<span class="marl-agent-chip"><span class="marl-agent-dot" style="background:#7B2FBE"></span>Tractor ${i+1}</span>`))
+      .concat(Array.from({length:chAgents},(_,i)=>`<span class="marl-agent-chip"><span class="marl-agent-dot" style="background:#1558A8"></span>Charger ${i+1}</span>`))
+      .concat(Array.from({length:ldAgents},(_,i)=>`<span class="marl-agent-chip"><span class="marl-agent-dot" style="background:#3A7A0E"></span>Load ${i+1}</span>`))
+      .join('');
+    el.insertAdjacentHTML('beforeend',`
+      <div class="marl-panel">
+        <div class="marl-panel-title">MARL Engine — ${total} active agents</div>
+        <div style="color:var(--text3);font-size:11px;line-height:1.6">
+          Each tractor and charging station acts as an independent decision-making agent.
+          Deferrable loads (low/normal priority) are also agent-controlled.
+          All agents use rule-based policies (T3.4 baseline); PPO training hooks are in place for the next phase.
+        </div>
+        <div class="marl-agents">${chips}</div>
+        <div style="margin-top:10px;font-size:11px;color:var(--text3)">
+          <strong style="color:var(--text2)">Tractor agents</strong> decide charge/idle each step based on SOC, tariff period, PV forecast, and grid headroom. &nbsp;
+          <strong style="color:var(--text2)">Charger agents</strong> choose off / half / full power. &nbsp;
+          <strong style="color:var(--text2)">Load agents</strong> shed non-critical consumers during peak tariff.
+        </div>
+      </div>`);
+  }
+
   // Night-only note if present
   const no=data.find(d=>d.scenario.includes('night'));
   if(no){
@@ -434,7 +474,7 @@ function renderResults(data){
     const col=SC_COL[scId]||'#888780';
     const ib=d.total_cost_eur===minCost;
     return `<div class="sc-row">
-      <div class="scn"><div class="dot" style="background:${col}"></div>${d.scenario}${d.tractor_pv?'<span class="tag tpv">PV</span>':''}${d.load_shedding?'<span class="tag tsh">shed</span>':''}</div>
+      <div class="scn"><div class="dot" style="background:${col}"></div>${d.scenario}${d.tractor_pv?'<span class="tag tpv">PV</span>':''}${d.load_shedding?'<span class="tag tsh">shed</span>':''}${d.use_marl?'<span class="tag tmarl">MARL</span>':''}</div>
       <div class="bar"><div class="barbg"><div class="barf" style="width:${(d.total_cost_eur/maxCost*100).toFixed(0)}%;background:${ib?'#3A7A0E':'#C0312F'}"></div></div><span class="num">€${d.total_cost_eur.toFixed(0)}</span></div>
       <div class="bar"><div class="barbg"><div class="barf" style="width:${(d.pv_self_use_share_pct/Math.max(maxPV,.1)*100).toFixed(0)}%;background:#3A7A0E"></div></div><span class="num">${d.pv_self_use_share_pct.toFixed(1)}%</span></div>
       <div class="bar"><div class="barbg"><div class="barf" style="width:${(d.completed_tasks/Math.max(maxTasks,1)*100).toFixed(0)}%;background:#A86209"></div></div><span class="num">${d.completed_tasks}/${d.total_tasks}</span></div>
