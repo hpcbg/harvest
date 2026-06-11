@@ -64,7 +64,7 @@ The power flow of the `full_smart` scenario:
 
 Scenario KPI comparison:
 
-[![KPI Comparison](./images/kpi_comparison.png)](./kpi_comparison.png)
+[![KPI Comparison](./images/kpi_comparison.png)](./images/kpi_comparison.png)
 
 ### Option B — Web Dashboard (recommended for demos)
 
