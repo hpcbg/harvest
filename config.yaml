@@ -200,6 +200,11 @@ scenarios:
   charging_strategy: smart_with_swap
   tractor_pv_enabled: true
   load_shedding: true
+- name: marl
+  charging_strategy: marl
+  tractor_pv_enabled: true
+  load_shedding: false
+  use_marl: true
 scheduler:
   objective_weights:
     energy_cost: 1.0
@@ -215,6 +220,25 @@ task_generation:
   mode: generated
   num_tasks: 20
   seed: 42
+marl:
+  enabled: true
+  algorithm: rule_based
+  agents:
+    tractors:
+      enabled: true
+      charge_threshold_soc: 90
+    charging_stations:
+      enabled: true
+    loads:
+      enabled: true
+      managed_priorities:
+        - low
+        - normal
+  reward_weights:
+    energy_cost: 1.0
+    peak_power: 3.0
+    task_completion: 10.0
+    battery_stress: 1.0
 prediction:
   pv:
     backend: static

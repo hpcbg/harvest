@@ -20,6 +20,12 @@ try:
 except ImportError:
     _PREDICTOR_AVAILABLE = False
 
+try:
+    from marl import build_marl_engine
+    _MARL_AVAILABLE = True
+except ImportError:
+    _MARL_AVAILABLE = False
+
 
 # ============================================================
 # Utilities
@@ -208,9 +214,10 @@ class Tractor:
 @dataclass
 class ScenarioDef:
     name: str
-    charging_strategy: str   # naive | night_only | smart | smart_with_swap
+    charging_strategy: str   # naive | night_only | smart | smart_with_swap | marl
     tractor_pv_enabled: bool
     load_shedding: bool
+    use_marl: bool = False
 
 
 @dataclass
@@ -616,6 +623,23 @@ class Simulator:
         self._load_predictor = _load_predictor
         self.metrics: List[StepMetrics] = []
 
+        # Build MARL engine when the scenario requests it
+        self.marl_engine = None
+        if _MARL_AVAILABLE and self.scenario_def.use_marl:
+            try:
+                self.marl_engine = build_marl_engine(
+                    self.config, self.raw, self.tariff, self.pv_model
+                )
+                if self.marl_engine is not None:
+                    print(
+                        f"  [marl] Engine active — "
+                        f"{len(self.marl_engine.tractor_agents)} tractor agents, "
+                        f"{len(self.marl_engine.charger_agents)} charger agents, "
+                        f"{len(self.marl_engine.load_agents)} load agents"
+                    )
+            except Exception:
+                pass  # fall back to rule-based on any error
+
     # ── Config builder ──────────────────────────────────────────────────────
 
     def _build_config(self) -> SimulationConfig:
@@ -742,9 +766,20 @@ class Simulator:
             total_pv_kw = farm_fixed_kw + tractor_pv_kw
 
             # --- Farm load (non-tractor consumers) ---
-            farm_load_kw = sum(
-                c.power_kw for c in self.config.consumers if c.is_active(now, shed_low=shed)
-            )
+            if self.marl_engine and self.marl_engine.load_agents:
+                # Compute base load first so MARL agents can observe headroom before shedding
+                base_farm_load_kw = sum(
+                    c.power_kw for c in self.config.consumers if c.is_active(now)
+                )
+                base_net_kw = self.config.grid_max_power_kw + total_pv_kw - base_farm_load_kw
+                farm_load_kw = sum(
+                    c.power_kw for c in self.config.consumers
+                    if c.is_active(now) and self.marl_engine.consumer_is_active(c, now, base_net_kw)
+                )
+            else:
+                farm_load_kw = sum(
+                    c.power_kw for c in self.config.consumers if c.is_active(now, shed_low=shed)
+                )
 
             # --- Headroom available for charging ---
             # grid cap + PV surplus - farm load
@@ -755,7 +790,10 @@ class Simulator:
             self.scheduler.assign_tasks(now)          # assign to already-free tractors
             self._progress_tasks(now, dt_h, pv_roof_on)
             self.scheduler.assign_tasks(now)          # re-assign to tractors that just finished
-            self.scheduler.allocate_charging(now, net_available_kw)
+            if self.marl_engine:
+                self.marl_engine.apply_charging(now, net_available_kw)
+            else:
+                self.scheduler.allocate_charging(now, net_available_kw)
             self._apply_charging(dt_h)
             self._accumulate_idle(dt_h)
 
@@ -1357,6 +1395,7 @@ def main() -> None:
             charging_strategy=s["charging_strategy"],
             tractor_pv_enabled=bool(s.get("tractor_pv_enabled", False)),
             load_shedding=bool(s.get("load_shedding", False)),
+            use_marl=bool(s.get("use_marl", False)),
         )
         for s in config.get("scenarios", [])
     ]
