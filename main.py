@@ -814,6 +814,13 @@ class Simulator:
             n_working = sum(1 for tr in self.config.tractors if tr.current_task_id is not None)
             n_idle = len(self.config.tractors) - n_charging - n_working
 
+            # Record MARL step log (actions already captured; add outcomes + rewards)
+            if self.marl_engine:
+                self.marl_engine.record_step(
+                    now, grid_kw, cost_eur, completed,
+                    self.config.objective_weights,
+                )
+
             self.metrics.append(StepMetrics(
                 timestamp=now,
                 scenario=self.scenario_def.name,

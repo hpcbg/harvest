@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -14,6 +15,33 @@ from .agents import (
     CHARGER_FULL,
     LOAD_OFF,
 )
+
+
+@dataclass
+class MARLStepLog:
+    """One 15-min step of MARL agent decisions, observations, and outcomes."""
+    timestamp: datetime
+    # Per-agent actions
+    tractor_actions:  Dict[str, int]    # TRACTOR_IDLE=0 | REQUEST_CHARGE=1
+    charger_actions:  Dict[str, int]    # CHARGER_OFF=0 | LOW=1 | FULL=2
+    load_actions:     Dict[str, int]    # LOAD_ON=0 | LOAD_OFF=1
+    # Key observations (tractor agents only — most informative)
+    tractor_soc:      Dict[str, float]  # tractor_id -> soc_percent at decision time
+    tractor_charge_kw: Dict[str, float] # tractor_id -> actual charge kW allocated
+    tractor_obs:      Dict[str, Dict]   # tractor_id -> subset of TractorObservation fields
+    # Environment snapshot
+    net_power_norm:   float
+    tariff_norm:      float
+    pv_shape:         float
+    # Outcomes (filled by record_step)
+    grid_kw:          float = 0.0
+    cost_eur:         float = 0.0
+    completed_tasks:  int   = 0
+    # Rewards (filled by record_step)
+    rewards:          Dict[str, float] = field(default_factory=dict)
+    cost_reward:      float = 0.0
+    peak_reward:      float = 0.0
+    task_reward:      float = 0.0
 
 
 class MARLEnvironment:
@@ -51,6 +79,10 @@ class MARLEnvironment:
         self.load_agents = load_agents
         self._tariff = tariff_model
         self._pv = pv_model
+        # ── Step logging ──────────────────────────────────────────────────────
+        self.step_log: List[MARLStepLog] = []
+        self._pending_log: Optional[Dict] = None
+        self._pending_load_actions: Dict[str, int] = {}
 
     # ── Normalisation helpers ────────────────────────────────────────────────
 
@@ -141,56 +173,90 @@ class MARLEnvironment:
             tr.requested_charge_power_kw = 0.0
             tr.actual_charge_power_kw = 0.0
 
-        pv_shape = self._pv.shape_at(now)
+        pv_shape    = self._pv.shape_at(now)
+        tariff_norm = self._tariff_norm(now)
+        net_norm    = self._net_norm(net_available_kw)
 
-        # Collect tractors that want to charge
+        # ── collect tractor actions + observations for logging ─────────────
+        tractor_actions: Dict[str, int]  = {}
+        tractor_soc:     Dict[str, float] = {}
+        tractor_obs_log: Dict[str, Dict]  = {}
+
         requesting: List[Any] = []
         for tr in self.cfg.tractors:
+            tractor_soc[tr.tractor_id] = tr.soc_percent
             if not tr.enabled or tr.current_task_id is not None or tr.soc_percent >= 90.0:
+                tractor_actions[tr.tractor_id] = 0   # TRACTOR_IDLE
                 continue
             agent = self.tractor_agents.get(tr.tractor_id)
             if agent is None:
+                tractor_actions[tr.tractor_id] = 0
                 continue
-            obs = self._obs_tractor(tr, now, net_available_kw, pv_shape)
-            if agent.act(obs) == TRACTOR_REQUEST_CHARGE:
+            obs    = self._obs_tractor(tr, now, net_available_kw, pv_shape)
+            action = agent.act(obs)
+            tractor_actions[tr.tractor_id] = action
+            tractor_obs_log[tr.tractor_id] = {
+                "soc_norm":       obs.soc_norm,
+                "tariff_norm":    obs.tariff_norm,
+                "net_power_norm": obs.net_power_norm,
+                "pv_shape":       obs.pv_shape,
+                "has_task":       obs.has_task,
+            }
+            if action == TRACTOR_REQUEST_CHARGE:
                 requesting.append(tr)
 
-        if not requesting:
-            return
+        # ── default all chargers to OFF, update as they are allocated ──────
+        charger_actions: Dict[str, int] = {ch.charger_id: CHARGER_OFF
+                                           for ch in self.cfg.chargers}
 
-        # Sort: if any urgent task is waiting, prioritise tractors with lowest SOC
-        has_urgent = any(
-            not t.is_done and t.assigned_tractor_id is None and t.priority == "urgent"
-            for t in self.cfg.tasks
-        )
-        requesting.sort(key=lambda tr: (0 if has_urgent else 1, tr.soc_percent))
+        if requesting:
+            has_urgent = any(
+                not t.is_done and t.assigned_tractor_id is None and t.priority == "urgent"
+                for t in self.cfg.tasks
+            )
+            requesting.sort(key=lambda tr: (0 if has_urgent else 1, tr.soc_percent))
 
-        available_kw = max(0.0, net_available_kw)
-        free_chargers = list(self.cfg.chargers)
+            available_kw  = max(0.0, net_available_kw)
+            free_chargers = list(self.cfg.chargers)
 
-        for tr in requesting:
-            if not free_chargers or available_kw <= 0.5:
-                break
-            ch = free_chargers.pop(0)
-            agent = self.charger_agents.get(ch.charger_id)
-            ch_obs = self._obs_charger(ch, now, available_kw, pv_shape)
-            action = agent.act(ch_obs) if agent else CHARGER_FULL
+            for tr in requesting:
+                if not free_chargers or available_kw <= 0.5:
+                    break
+                ch     = free_chargers.pop(0)
+                agent  = self.charger_agents.get(ch.charger_id)
+                ch_obs = self._obs_charger(ch, now, available_kw, pv_shape)
+                action = agent.act(ch_obs) if agent else CHARGER_FULL
+                charger_actions[ch.charger_id] = action
 
-            if action == CHARGER_OFF:
-                free_chargers.insert(0, ch)  # charger declined — put back for next tractor
-                continue
+                if action == CHARGER_OFF:
+                    free_chargers.insert(0, ch)
+                    continue
 
-            max_req = min(ch.max_power_kw, self.cfg.tractors_model.max_charge_power_kw)
-            req = max_req * (0.5 if action == CHARGER_LOW else 1.0)
-            alloc = min(req, available_kw)
-            if alloc <= 0.5:
-                continue
+                max_req = min(ch.max_power_kw, self.cfg.tractors_model.max_charge_power_kw)
+                req     = max_req * (0.5 if action == CHARGER_LOW else 1.0)
+                alloc   = min(req, available_kw)
+                if alloc <= 0.5:
+                    continue
 
-            tr.is_charging = True
-            tr.assigned_charger_id = ch.charger_id
-            tr.requested_charge_power_kw = req
-            tr.actual_charge_power_kw = alloc
-            available_kw -= alloc
+                tr.is_charging              = True
+                tr.assigned_charger_id      = ch.charger_id
+                tr.requested_charge_power_kw = req
+                tr.actual_charge_power_kw   = alloc
+                available_kw -= alloc
+
+        # ── store pending log entry (outcomes filled in record_step) ───────
+        self._pending_log = {
+            "tractor_actions":  tractor_actions,
+            "tractor_soc":      tractor_soc,
+            "tractor_charge_kw": {tr.tractor_id: tr.actual_charge_power_kw
+                                  for tr in self.cfg.tractors},
+            "tractor_obs":      tractor_obs_log,
+            "charger_actions":  charger_actions,
+            "net_power_norm":   net_norm,
+            "tariff_norm":      tariff_norm,
+            "pv_shape":         pv_shape,
+        }
+        self._pending_load_actions = {}   # reset; filled by consumer_is_active calls
 
     def consumer_is_active(
         self, consumer: Any, now: datetime, net_available_kw: float
@@ -203,8 +269,63 @@ class MARLEnvironment:
         agent = self.load_agents.get(consumer.consumer_id)
         if agent is None:
             return True
-        obs = self._obs_load(consumer, now, net_available_kw)
-        return agent.act(obs) != LOAD_OFF
+        obs    = self._obs_load(consumer, now, net_available_kw)
+        action = agent.act(obs)
+        self._pending_load_actions[consumer.consumer_id] = action   # log it
+        return action != LOAD_OFF
+
+    def record_step(
+        self,
+        now: datetime,
+        grid_kw: float,
+        cost_eur: float,
+        completed: int,
+        weights: Dict[str, float],
+    ) -> None:
+        """Finalise the pending log entry with step outcomes and rewards.
+
+        Call this once per simulation step AFTER power accounting, e.g.::
+
+            if self.marl_engine:
+                self.marl_engine.record_step(
+                    now, grid_kw, cost_eur, completed,
+                    self.config.objective_weights,
+                )
+        """
+        if self._pending_log is None:
+            return
+
+        rewards = self.compute_step_rewards(grid_kw, cost_eur, completed, weights)
+
+        w_cost = weights.get("energy_cost",   1.0)
+        w_peak = weights.get("peak_power",    3.0)
+        w_task = weights.get("task_completion", 10.0)
+
+        cost_r = -cost_eur * w_cost
+        peak_r = -max(0.0, grid_kw - self.cfg.grid_max_power_kw * 0.8) * w_peak
+        task_r = completed * 0.01 * w_task
+
+        entry = MARLStepLog(
+            timestamp=now,
+            tractor_actions=self._pending_log["tractor_actions"],
+            charger_actions=self._pending_log["charger_actions"],
+            load_actions=dict(self._pending_load_actions),
+            tractor_soc=self._pending_log["tractor_soc"],
+            tractor_charge_kw=self._pending_log["tractor_charge_kw"],
+            tractor_obs=self._pending_log["tractor_obs"],
+            net_power_norm=self._pending_log["net_power_norm"],
+            tariff_norm=self._pending_log["tariff_norm"],
+            pv_shape=self._pending_log["pv_shape"],
+            grid_kw=grid_kw,
+            cost_eur=cost_eur,
+            completed_tasks=completed,
+            rewards=rewards,
+            cost_reward=cost_r,
+            peak_reward=peak_r,
+            task_reward=task_r,
+        )
+        self.step_log.append(entry)
+        self._pending_log = None
 
     # ── Reward computation (for future RL training) ──────────────────────────
 

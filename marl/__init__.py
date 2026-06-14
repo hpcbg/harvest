@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 
 from .base import BaseAgent, TractorObservation, ChargerObservation, LoadObservation
 from .agents import TractorAgent, ChargingStationAgent, LoadAgent
-from .environment import MARLEnvironment
+from .environment import MARLEnvironment, MARLStepLog
 
 
 def build_marl_engine(
@@ -65,6 +65,7 @@ def build_marl_engine(
 __all__ = [
     "build_marl_engine",
     "MARLEnvironment",
+    "MARLStepLog",
     "BaseAgent",
     "TractorAgent",
     "ChargingStationAgent",
