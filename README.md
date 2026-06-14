@@ -27,13 +27,18 @@ harvest/
 ├── requirements.txt          # Python dependencies
 ├── config.local.yaml         # Local overrides — gitignored, never committed (optional)
 ├── generate_prediction_overview.py  # Regenerates images/prediction_overview.png
-└── predictor/                # Prediction module (TPI3)
-    ├── __init__.py           #   build_predictors() factory + public API
-    ├── base.py               #   Abstract base classes (BasePVPredictor, BaseLoadPredictor)
-    ├── static.py             #   Static profile wrapper — backward-compatible default
-    ├── synthetic.py          #   Synthetic training data generator
-    ├── nn_predictor.py       #   Neural network train + inference (Keras/TensorFlow)
-    └── weather.py            #   Open-Meteo live weather + offline seasonal stub
+├── predictor/                # Prediction module (TPI3)
+│   ├── __init__.py           #   build_predictors() factory + public API
+│   ├── base.py               #   Abstract base classes (BasePVPredictor, BaseLoadPredictor)
+│   ├── static.py             #   Static profile wrapper — backward-compatible default
+│   ├── synthetic.py          #   Synthetic training data generator
+│   ├── nn_predictor.py       #   Neural network train + inference (Keras/TensorFlow)
+│   └── weather.py            #   Open-Meteo live weather + offline seasonal stub
+└── marl/                     # Multi-agent RL engine (T3.4)
+    ├── __init__.py           #   build_marl_engine() factory
+    ├── base.py               #   BaseAgent + observation dataclasses
+    ├── agents.py             #   TractorAgent, ChargingStationAgent, LoadAgent
+    └── environment.py        #   MARLEnvironment — replaces Scheduler.allocate_charging()
 ```
 
 ---
@@ -224,20 +229,70 @@ The `ForecastBundle` is the bridge between the prediction module and the future 
 
 ---
 
+## MARL Engine
+
+The `marl/` package implements **T3.4** — a multi-agent reinforcement learning engine that replaces the centralised `Scheduler.allocate_charging()` with per-agent decisions. It is activated by the `marl` scenario or by setting `marl.enabled: true` in `config.yaml`. The simulator falls back to the rule-based scheduler transparently on any error.
+
+### Agents
+
+| Agent | Count | Observation space | Action space |
+|---|---|---|---|
+| `TractorAgent` | one per tractor | SOC, is_charging, has_task, task_urgency, deadline, tariff, net_power, pv_shape, hour | idle / request_charge |
+| `ChargingStationAgent` | one per charger | is_occupied, connected_soc, net_power, tariff, pv_shape, hour | off / low (50%) / full |
+| `LoadAgent` | one per deferrable consumer | priority, power_kw, net_power, tariff, hour | on / off |
+
+All agents are currently **rule-based**. The architecture is designed so that a learned PPO policy can be dropped in by overriding `act()` on any agent class — `learn()` and `compute_step_rewards()` are already wired into every simulation step to provide the data pipeline.
+
+### Reward
+
+`MARLEnvironment.compute_step_rewards()` returns a scalar per agent at each 15-min step:
+
+```
+team_reward = −cost_eur × w_cost  −  grid_excess_kw × w_peak  +  tasks_done × 0.01 × w_task
+tractor_reward = team_reward − |soc − 0.6| × w_battery × 0.05
+```
+
+Weights are set in `config.yaml` under `marl.reward_weights`.
+
+### Configuration
+
+```yaml
+marl:
+  enabled: true
+  algorithm: rule_based     # rule_based | ppo (planned)
+  agents:
+    tractors:
+      enabled: true
+      charge_threshold_soc: 90
+    charging_stations:
+      enabled: true
+    loads:
+      enabled: true
+      managed_priorities: [low, normal]   # critical/high are never shed
+  reward_weights:
+    energy_cost: 1.0
+    peak_power: 3.0
+    task_completion: 10.0
+    battery_stress: 1.0
+```
+
+---
+
 ## Simulation Model
 
 ### Scenarios
 
-| Scenario | Charging strategy | Tractor PV | Load shedding |
-|---|---|---|---|
-| naive | Immediate full power | ✗ | ✗ |
-| night_only | Valle tariff hours only (00–08h) | ✗ | ✗ |
-| smart | PV surplus + grid headroom | ✗ | ✗ |
-| smart_with_swap | Smart + battery module swaps | ✗ | ✗ |
-| pv_roof | Smart + tractor roof panels | ✓ | ✗ |
-| pv_roof_swap | Smart+swap + roof panels | ✓ | ✗ |
-| pv_roof_shed | Smart + roof + load shedding | ✓ | ✓ |
-| full_smart | All optimisations active | ✓ | ✓ |
+| Scenario | Charging strategy | Tractor PV | Load shedding | MARL |
+|---|---|---|---|---|
+| naive | Immediate full power | ✗ | ✗ | ✗ |
+| night_only | Valle tariff hours only (00–08h) | ✗ | ✗ | ✗ |
+| smart | PV surplus + grid headroom | ✗ | ✗ | ✗ |
+| smart_with_swap | Smart + battery module swaps | ✗ | ✗ | ✗ |
+| pv_roof | Smart + tractor roof panels | ✓ | ✗ | ✗ |
+| pv_roof_swap | Smart+swap + roof panels | ✓ | ✗ | ✗ |
+| pv_roof_shed | Smart + roof + load shedding | ✓ | ✓ | ✗ |
+| full_smart | All optimisations active | ✓ | ✓ | ✗ |
+| marl | Per-agent decisions (MARL engine) | ✓ | ✓ | ✓ |
 
 ### Farm Consumers Modelled
 
@@ -328,7 +383,7 @@ prediction:
 | TPI3 AI Prediction Module | 🔄 Partial | Architecture done; NN training requires calibrated data |
 | T3.1 FIWARE NGSI-LD Layer | ⬜ Pending | Digital twin adapter planned |
 | T3.2 ROS2 Agro-Robotics | ⬜ Pending | ZETRABOT interface planned |
-| T3.4 MARL Engine | ⬜ Pending | PPO agents to replace rule-based scheduler |
+| T3.4 MARL Engine | 🔄 Partial | Agent framework + rule-based policies done; PPO training pending |
 | T3.6 Edge Autonomy | ⬜ Pending | BLE Mesh sensors + Jetson Orin deployment |
 
 **D2 Prototype deadline: 30 June 2026**
