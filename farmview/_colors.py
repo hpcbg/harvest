@@ -47,6 +47,7 @@ TRACTOR_STATUS_COLOR = {
     "charging":  "#1A6EBD",
     "transit":   "#E67E22",
     "executing": "#27AE60",
+    "offline":   "#922B21",
 }
 
 TRACTOR_STATUS_LABEL = {
@@ -54,6 +55,7 @@ TRACTOR_STATUS_LABEL = {
     "charging":  "Charging",
     "transit":   "In Transit",
     "executing": "Executing",
+    "offline":   "Offline",
 }
 
 # Battery SOC level colors
@@ -68,14 +70,23 @@ CHARGER_COLOR = "#1A5276"
 
 # ── MARL visualization ────────────────────────────────────────────────────────
 
-# Tractor agent: 0 = IDLE (gray), 1 = REQUEST_CHARGE (green)
-MARL_TRACTOR_CMAP = ["#BDC3C7", "#27AE60"]
+# Tractor agent: 0 = IDLE (light gray), 1 = REQUEST_CHARGE (blue)
+MARL_TRACTOR_CMAP = ["#D5D8DC", "#2E86C1"]
 
-# Charger agent: 0 = OFF (red), 1 = LOW (yellow), 2 = FULL (green)
-MARL_CHARGER_CMAP = ["#E74C3C", "#F39C12", "#27AE60"]
+# Charger agent: 0 = OFF (near-white), 1 = LOW (teal-light), 2 = FULL (teal-dark)
+MARL_CHARGER_CMAP = ["#F0F3F4", "#76D7C4", "#1A7A6E"]
 
-# Load agent: 0 = ON (blue), 1 = OFF/shed (red)
-MARL_LOAD_CMAP = ["#2980B9", "#E74C3C"]
+# Load agent: -1→0 = not-scheduled (gray), 0→1 = ON (slate), 1→2 = shed (amber)
+# Values in MARLStepLog are -1/0/1; add 1 before passing to imshow (range 0-2).
+MARL_LOAD_CMAP = ["#D5D8DC", "#5D6D7E", "#F39C12"]
+
+# Dynamic event type → annotation color
+EVENT_COLORS = {
+    "task_inject":    "#8E44AD",   # purple
+    "tractor_offline": "#922B21",  # dark red
+    "grid_reduce":    "#E67E22",   # orange
+    "grid_restore":   "#1A7A6E",   # teal
+}
 
 # Reward component colors
 REWARD_COST_COLOR = "#E74C3C"

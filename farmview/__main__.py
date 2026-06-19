@@ -92,8 +92,9 @@ def main() -> None:
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    scenario_label = sdef.name.replace("_", " ").upper()
     farm_title = (
-        f"HARVEST — {sdef.name.replace('_', ' ').title()}  |  "
+        f"HARVEST - {scenario_label}  |  "
         f"Tasks {done}/{total} completed  |  End-of-day snapshot"
     )
     render_farm(
@@ -106,6 +107,8 @@ def main() -> None:
         map_h=map_h,
         output=out,
         dpi=args.dpi,
+        events=sim.fired_events if sim.fired_events else None,
+        injected_task_ids=sim.injected_task_ids if sim.injected_task_ids else None,
     )
     print(f"Farm map  -> {out}")
 
@@ -114,15 +117,17 @@ def main() -> None:
         marl_out = Path(args.marl_output)
         marl_out.parent.mkdir(parents=True, exist_ok=True)
 
+        event_note = "  |  plan changes active" if sim.fired_events else ""
         marl_title = (
-            f"MARL Agent Log — {sdef.name.replace('_', ' ').title()}  |  "
-            f"{len(sim.marl_engine.step_log)} time steps"
+            f"MARL Agent Log - {scenario_label}  |  "
+            f"{len(sim.marl_engine.step_log)} steps{event_note}"
         )
         render_marl_log(
             step_log=sim.marl_engine.step_log,
             output=marl_out,
             title=marl_title,
             dpi=args.dpi,
+            events=sim.fired_events if sim.fired_events else None,
         )
         print(f"MARL dash -> {marl_out}")
     elif sdef.use_marl:

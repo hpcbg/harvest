@@ -17,6 +17,7 @@ from ._colors import (
     TRACTOR_STATUS_COLOR, TRACTOR_STATUS_LABEL,
     SOC_HIGH, SOC_MID, SOC_LOW,
     FARM_BG, DEPOT_BG, CHARGER_COLOR,
+    EVENT_COLORS,
 )
 
 _DEFAULT_MAP_W = 800.0
@@ -36,6 +37,8 @@ def _soc_color(soc: float) -> str:
 
 
 def _tractor_status(tr, tasks_by_id: Dict) -> str:
+    if not tr.enabled:
+        return "offline"
     if tr.current_task_id is not None:
         task = tasks_by_id.get(tr.current_task_id)
         if task:
@@ -81,7 +84,7 @@ def _draw_depot(ax, chargers) -> None:
 
 # ── charger stations ──────────────────────────────────────────────────────────
 
-def _draw_charger(ax, ch) -> None:
+def _draw_charger(ax, ch, label_above: bool = False) -> None:
     x, y = ch.location
     hw, hh = 9, 12
     ax.add_patch(FancyBboxPatch(
@@ -92,9 +95,11 @@ def _draw_charger(ax, ch) -> None:
     ))
     ax.text(x, y + 1, "⚡", fontsize=8,
             ha="center", va="center", color="#F1C40F", fontweight="bold", zorder=4)
-    ax.text(x, y - hh - 4,
+    label_y  = y + hh + 4  if label_above else y - hh - 4
+    label_va = "bottom"     if label_above else "top"
+    ax.text(x, label_y,
             ch.charger_id.replace("charger_", "CH"),
-            fontsize=5.5, ha="center", va="top",
+            fontsize=5.5, ha="center", va=label_va,
             color=CHARGER_COLOR, fontweight="bold", zorder=4)
 
 
@@ -112,7 +117,7 @@ def _draw_charger_line(ax, tr, ch) -> None:
 
 # ── task markers ──────────────────────────────────────────────────────────────
 
-def _draw_tasks(ax, tasks) -> None:
+def _draw_tasks(ax, tasks, injected_task_ids=None) -> None:
     for task in tasks:
         x, y = task.location
         marker, _ = _task_marker_style(task.name)
@@ -144,6 +149,11 @@ def _draw_tasks(ax, tasks) -> None:
                     facecolor=phase_color, edgecolor="white",
                     linewidth=0.7, alpha=0.8, zorder=4,
                 ))
+
+        # Injected tasks: purple outer ring to mark dynamic origin
+        if injected_task_ids and task.task_id in injected_task_ids:
+            ax.scatter([x], [y], s=size * 3.2, marker="o",
+                       c="#8E44AD", zorder=1, linewidths=0, alpha=0.45)
 
         # Task ID label below
         ax.text(x, y - 15, task.task_id.replace("task_", "#"),
@@ -203,10 +213,20 @@ def _draw_tractor(ax, tr, tasks_by_id: Dict, model) -> None:
         ax.text(bx + 3.5, by + _BODY_H - 4, "⚡",
                 fontsize=6, color="#F1C40F", ha="center", va="top", zorder=8)
 
+    # Offline: cross-out overlay
+    if status == "offline":
+        for x1, y1, x2, y2 in [(bx, by, bx+_BODY_W, by+_BODY_H),
+                                 (bx+_BODY_W, by, bx, by+_BODY_H)]:
+            ax.plot([x1, x2], [y1, y2], color="white", lw=2.5, zorder=9)
+        ax.text(x - _BODY_W * 0.10, by + _BODY_H / 2, "X",
+                fontsize=9, ha="center", va="center",
+                color="white", fontweight="bold", zorder=10)
+
     # Label below body
+    lbl_color = "#922B21" if status == "offline" else "#1A252F"
     ax.text(x, by - 5,
             tr.tractor_id.replace("tractor_", "T"),
-            fontsize=6.5, ha="center", va="top", color="#1A252F", fontweight="bold",
+            fontsize=6.5, ha="center", va="top", color=lbl_color, fontweight="bold",
             bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=0.5), zorder=8)
 
 
@@ -233,7 +253,7 @@ def _draw_transit_arrow(ax, tr, task) -> None:
 
 # ── fleet panel (right side) ──────────────────────────────────────────────────
 
-def _draw_fleet_panel(ax, tractors, tasks_by_id: Dict, model) -> None:
+def _draw_fleet_panel(ax, tractors, tasks_by_id: Dict, model, events=None) -> None:
     n = len(tractors)
     if n == 0:
         return
@@ -247,9 +267,13 @@ def _draw_fleet_panel(ax, tractors, tasks_by_id: Dict, model) -> None:
             ha="center", va="top", fontsize=9, fontweight="bold", color="#1A252F",
             transform=ax.transAxes)
 
+    events_h = 0.0
+    if events:
+        events_h = min(0.04 * len(events) + 0.04, 0.30)
+
     pad = 0.018
     header_h = 0.055
-    card_h = (1.0 - header_h - pad) / n
+    card_h = (1.0 - header_h - pad - events_h) / n
 
     for i, tr in enumerate(tractors):
         status = _tractor_status(tr, tasks_by_id)
@@ -274,7 +298,7 @@ def _draw_fleet_panel(ax, tractors, tasks_by_id: Dict, model) -> None:
                 transform=ax.transAxes, va="center")
 
         # Status (top-right)
-        stxt = TRACTOR_STATUS_LABEL[status]
+        stxt = TRACTOR_STATUS_LABEL.get(status, status.title())
         if status == "charging" and tr.actual_charge_power_kw > 0:
             stxt += f"  {tr.actual_charge_power_kw:.1f} kW"
         ax.text(0.95, cy_bot + h * 0.80, stxt,
@@ -331,6 +355,33 @@ def _draw_fleet_panel(ax, tractors, tasks_by_id: Dict, model) -> None:
                     fontsize=5.5, color="#566573", va="center",
                     transform=ax.transAxes)
 
+    # Event log (bottom of panel, only when events were fired)
+    if events:
+        ey_top = events_h
+        ax.add_patch(FancyBboxPatch(
+            (0.04, 0.005), 0.92, ey_top - 0.01,
+            boxstyle="round,pad=0.006",
+            facecolor="#F8F9FA", edgecolor="#BDC3C7", linewidth=1.0,
+            transform=ax.transAxes, zorder=2,
+        ))
+        ax.text(0.5, ey_top - 0.008,
+                "Plan changes",
+                fontsize=6, ha="center", va="top", fontweight="bold",
+                color="#566573", transform=ax.transAxes)
+        for k, ev in enumerate(events):
+            ey = ey_top - 0.032 - k * 0.038
+            if ey < 0.01:
+                break
+            ec = EVENT_COLORS.get(ev.event_type, "#7F8C8D")
+            ax.add_patch(mpatches.Circle(
+                (0.08, ey + 0.005), 0.025,
+                facecolor=ec, transform=ax.transAxes, zorder=3,
+            ))
+            ts = ev.timestamp.strftime("%H:%M")
+            ax.text(0.14, ey + 0.005, f"{ts}  {ev.label}",
+                    fontsize=5.5, va="center", color="#2C3E50",
+                    transform=ax.transAxes)
+
 
 # ── legend ─────────────────────────────────────────────────────────────────────
 
@@ -352,6 +403,12 @@ def _draw_legend(ax) -> None:
             linewidth=PRIORITY_EDGE_WIDTH[priority] + 0.5,
             label=f"Priority: {priority}",
         ))
+    for key, (marker, label) in TASK_TYPE_MARKER.items():
+        handles.append(mlines.Line2D(
+            [], [], marker=marker, color="none",
+            markerfacecolor="#7F8C8D", markeredgecolor="#7F8C8D",
+            markersize=5.5, label=f"Task: {label}",
+        ))
     ax.legend(
         handles=handles, loc="lower right",
         fontsize=5.5, ncol=3,
@@ -372,6 +429,8 @@ def render_farm(
     map_h: float = _DEFAULT_MAP_H,
     output=None,
     dpi: int = 150,
+    events=None,
+    injected_task_ids=None,
 ) -> plt.Figure:
     """Render a top-down farm map snapshot and return the matplotlib Figure.
 
@@ -412,10 +471,10 @@ def render_farm(
     _draw_farm_bg(ax_map, map_w, map_h)
     _draw_depot(ax_map, chargers)
 
-    for ch in chargers:
-        _draw_charger(ax_map, ch)
+    for i, ch in enumerate(chargers):
+        _draw_charger(ax_map, ch, label_above=(i % 2 == 1))
 
-    _draw_tasks(ax_map, tasks)
+    _draw_tasks(ax_map, tasks, injected_task_ids=injected_task_ids)
 
     # Transit arrows (below tractor icons)
     for tr in tractors:
@@ -437,7 +496,7 @@ def render_farm(
     _draw_legend(ax_map)
 
     # ── fleet panel ───────────────────────────────────────────────────────────
-    _draw_fleet_panel(ax_fleet, tractors, tasks_by_id, model)
+    _draw_fleet_panel(ax_fleet, tractors, tasks_by_id, model, events=events)
 
     fig.suptitle(title, fontsize=13, fontweight="bold", color="#1A252F", y=0.98)
 

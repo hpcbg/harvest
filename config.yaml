@@ -281,3 +281,32 @@ prediction:
     - 50
     epochs: 2000
     dropout: null
+
+# Set to false to run all scenarios without any mid-day disruptions.
+dynamic_events_enabled: true
+
+# Dynamic plan-change events injected during the simulation day.
+# All scenarios run the same events so reactions can be compared across strategies.
+dynamic_events:
+- at: '2026-06-01 10:00:00'
+  type: task_inject
+  label: 'Urgent spray injected'
+  task:
+    name: 'Emergency sprayer B'
+    priority: urgent
+    location: {x: 620, y: 310}
+    duration_minutes: 35
+    distance_km: 1.8
+    uses_pto: true
+    pto_power_kw: 7.5
+- at: '2026-06-01 13:30:00'
+  type: tractor_offline
+  label: 'Tractor 2 breakdown'
+  tractor_id: tractor_2
+- at: '2026-06-01 16:00:00'
+  type: grid_reduce
+  label: 'Grid cap reduced to 7 kW'
+  new_max_kw: 7.0
+- at: '2026-06-01 18:00:00'
+  type: grid_restore
+  label: 'Grid cap restored'

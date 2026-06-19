@@ -305,11 +305,15 @@ class MARLEnvironment:
         peak_r = -max(0.0, grid_kw - self.cfg.grid_max_power_kw * 0.8) * w_peak
         task_r = completed * 0.01 * w_task
 
+        # Include all managed load agents: -1 = not scheduled this step
+        complete_load_actions = {lid: -1 for lid in self.load_agents}
+        complete_load_actions.update(self._pending_load_actions)
+
         entry = MARLStepLog(
             timestamp=now,
             tractor_actions=self._pending_log["tractor_actions"],
             charger_actions=self._pending_log["charger_actions"],
-            load_actions=dict(self._pending_load_actions),
+            load_actions=complete_load_actions,
             tractor_soc=self._pending_log["tractor_soc"],
             tractor_charge_kw=self._pending_log["tractor_charge_kw"],
             tractor_obs=self._pending_log["tractor_obs"],

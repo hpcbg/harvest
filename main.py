@@ -26,6 +26,12 @@ try:
 except ImportError:
     _MARL_AVAILABLE = False
 
+try:
+    from farmview import render_farm, render_marl_log
+    _FARMVIEW_AVAILABLE = True
+except ImportError:
+    _FARMVIEW_AVAILABLE = False
+
 
 # ============================================================
 # Utilities
@@ -236,6 +242,15 @@ class SimulationConfig:
     tractor_pv_cfg: TractorPVConfig
     objective_weights: Dict[str, float]
     scenario_def: ScenarioDef
+
+
+@dataclass
+class SimEvent:
+    """A dynamic plan-change event fired during the simulation."""
+    timestamp: datetime
+    event_type: str   # task_inject | tractor_offline | grid_reduce | grid_restore
+    label: str
+    detail: dict      # event-specific payload (task_id, tractor_id, new_max_kw, …)
 
 
 @dataclass
@@ -622,6 +637,11 @@ class Simulator:
         )
         self._load_predictor = _load_predictor
         self.metrics: List[StepMetrics] = []
+        # Dynamic event tracking
+        self.fired_events: List[SimEvent] = []
+        self.injected_task_ids: set = set()
+        self._raw_events = self._load_events()
+        self._original_grid_cap = float(self.raw["grid"]["max_power_kw"])
 
         # Build MARL engine when the scenario requests it
         self.marl_engine = None
@@ -749,6 +769,84 @@ class Simulator:
             scenario_def=self.scenario_def,
         )
 
+    # ── Dynamic events ──────────────────────────────────────────────────────
+
+    def _load_events(self):
+        if not self.raw.get("dynamic_events_enabled", True):
+            return []
+        raw = self.raw.get("dynamic_events", [])
+        result = []
+        for e in raw:
+            result.append({"at": parse_dt(e["at"]), "params": e, "_fired": False})
+        return sorted(result, key=lambda x: x["at"])
+
+    def _apply_event(self, ev: dict, now: datetime) -> None:
+        params = ev["params"]
+        etype  = params["type"]
+        label  = params.get("label", etype)
+
+        if etype == "task_inject":
+            tc      = params["task"]
+            task_id = f"dyn_{len(self.injected_task_ids) + 1:03d}"
+            priority = tc.get("priority", "urgent")
+            loc      = (float(tc["location"]["x"]), float(tc["location"]["y"]))
+            task     = Task(
+                task_id=task_id,
+                name=tc["name"],
+                location=loc,
+                earliest_start=now,
+                latest_finish=now + timedelta(hours=(4 if priority == "urgent" else 10)),
+                duration_minutes=int(tc.get("duration_minutes", 45)),
+                distance_km=float(tc.get("distance_km", 1.5)),
+                priority=priority,
+                can_wait=(priority != "urgent"),
+                uses_pto=bool(tc.get("uses_pto", False)),
+                pto_power_kw=float(tc.get("pto_power_kw", 0.0)),
+            )
+            self.config.tasks.append(task)
+            self.injected_task_ids.add(task_id)
+            self.fired_events.append(SimEvent(
+                timestamp=now, event_type=etype, label=label,
+                detail={"task_id": task_id, "task_name": tc["name"]},
+            ))
+
+        elif etype == "tractor_offline":
+            tid = params["tractor_id"]
+            tr  = next((t for t in self.config.tractors if t.tractor_id == tid), None)
+            if tr:
+                tr.enabled = False
+                if tr.current_task_id:
+                    task = next(
+                        (t for t in self.config.tasks if t.task_id == tr.current_task_id), None
+                    )
+                    if task:
+                        task.phase = "INTERRUPTED"
+                        task.assigned_tractor_id = None
+                        task.interruption_count += 1
+                    tr.current_task_id = None
+                tr.is_charging = False
+                tr.assigned_charger_id = None
+                tr.requested_charge_power_kw = 0.0
+                tr.actual_charge_power_kw = 0.0
+                self.fired_events.append(SimEvent(
+                    timestamp=now, event_type=etype, label=label,
+                    detail={"tractor_id": tid},
+                ))
+
+        elif etype == "grid_reduce":
+            self.config.grid_max_power_kw = float(params["new_max_kw"])
+            self.fired_events.append(SimEvent(
+                timestamp=now, event_type=etype, label=label,
+                detail={"new_max_kw": params["new_max_kw"]},
+            ))
+
+        elif etype == "grid_restore":
+            self.config.grid_max_power_kw = self._original_grid_cap
+            self.fired_events.append(SimEvent(
+                timestamp=now, event_type=etype, label=label,
+                detail={"restored_kw": self._original_grid_cap},
+            ))
+
     # ── Main loop ───────────────────────────────────────────────────────────
 
     def run(self) -> List[StepMetrics]:
@@ -758,6 +856,12 @@ class Simulator:
         pv_roof_on = self.scenario_def.tractor_pv_enabled
 
         while now < self.config.end_time:
+            # --- Dynamic events ---
+            for ev in self._raw_events:
+                if not ev["_fired"] and now >= ev["at"]:
+                    self._apply_event(ev, now)
+                    ev["_fired"] = True
+
             # --- PV generation ---
             farm_fixed_kw = self.pv_model.farm_fixed_kw(now)
             tractor_pv_kw = self.pv_model.tractor_fleet_kw(
@@ -1433,6 +1537,42 @@ def main() -> None:
         save_dataframe_csv(df, outputs_dir / f"timeseries_{sdef.name}.csv")
         save_dataframe_csv(task_df, outputs_dir / f"task_schedule_{sdef.name}.csv")
         plot_scenario_power(df, outputs_dir, sdef.name, task_df)
+
+        # Farm map + MARL dashboard via farmview (when available)
+        if _FARMVIEW_AVAILABLE:
+            farm_cfg  = config.get("farm", {}).get("map", {})
+            map_w     = float(farm_cfg.get("width_m", 800.0))
+            map_h     = float(farm_cfg.get("height_m", 500.0))
+            done_cnt  = sum(1 for t in sim.config.tasks if t.is_done)
+            total_cnt = len(sim.config.tasks)
+            label     = sdef.name.replace("_", " ").upper()
+            events    = sim.fired_events if sim.fired_events else None
+
+            farm_out = outputs_dir / f"{sdef.name}_farm_map.png"
+            render_farm(
+                tractors=sim.config.tractors,
+                tasks=sim.config.tasks,
+                chargers=sim.config.chargers,
+                model=sim.config.tractors_model,
+                title=f"HARVEST - {label}  |  Tasks {done_cnt}/{total_cnt} completed  |  End-of-day snapshot",
+                map_w=map_w, map_h=map_h,
+                output=farm_out, dpi=150,
+                events=events,
+                injected_task_ids=sim.injected_task_ids if sim.injected_task_ids else None,
+            )
+            plt.close("all")
+
+            if sim.marl_engine and sim.marl_engine.step_log:
+                event_note = "  |  plan changes active" if events else ""
+                marl_out = outputs_dir / f"{sdef.name}_marl_dashboard.png"
+                render_marl_log(
+                    step_log=sim.marl_engine.step_log,
+                    output=marl_out,
+                    title=f"MARL Agent Log - {label}  |  {len(sim.marl_engine.step_log)} steps{event_note}",
+                    dpi=150,
+                    events=events,
+                )
+                plt.close("all")
 
         print(" done.")
         print_scenario_result(summary)

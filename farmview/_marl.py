@@ -12,7 +12,7 @@ from ._colors import (
     MARL_TRACTOR_CMAP, MARL_CHARGER_CMAP, MARL_LOAD_CMAP,
     REWARD_COST_COLOR, REWARD_PEAK_COLOR, REWARD_TASK_COLOR,
     TARIFF_VALLE_BG, TARIFF_LLANO_BG, TARIFF_PUNTA_BG,
-    TRACTOR_STATUS_COLOR,
+    TRACTOR_STATUS_COLOR, EVENT_COLORS,
 )
 
 # Action labels for the legend
@@ -46,8 +46,27 @@ def _shade_tariff(ax, hours: list, step_log) -> None:
                    alpha=0.55, zorder=0)
 
 
+def _draw_event_markers(ax, sim_t0, events, y_frac: float = 0.97) -> None:
+    """Draw vertical dashed lines at event times, with a short label at the top."""
+    if not events:
+        return
+    for ev in events:
+        h = (ev.timestamp - sim_t0).total_seconds() / 3600.0
+        color = EVENT_COLORS.get(ev.event_type, "#7F8C8D")
+        ax.axvline(h, color=color, lw=1.2, linestyle="--", alpha=0.8, zorder=5)
+        ylim = ax.get_ylim()
+        ypos = ylim[0] + (ylim[1] - ylim[0]) * y_frac
+        ax.text(h + 0.05, ypos, ev.label,
+                fontsize=5, color=color, va="top", ha="left",
+                rotation=90, zorder=6)
+
+
 def _build_heatmap(step_log, tractor_ids, charger_ids, load_ids):
-    """Return a 2-D array (n_agents × n_steps) of action integers."""
+    """Return a 2-D array (n_agents × n_steps) of action integers.
+
+    Load values in the log are -1 (not scheduled), 0 (ON), 1 (shed).
+    We shift them by +1 to give imshow the range [0, 2].
+    """
     n_tr, n_ch, n_ld = len(tractor_ids), len(charger_ids), len(load_ids)
     n_agents = n_tr + n_ch + n_ld
     steps    = len(step_log)
@@ -58,13 +77,14 @@ def _build_heatmap(step_log, tractor_ids, charger_ids, load_ids):
         for r, cid in enumerate(charger_ids):
             mat[n_tr + r, t] = log.charger_actions.get(cid, 0)
         for r, lid in enumerate(load_ids):
-            mat[n_tr + n_ch + r, t] = log.load_actions.get(lid, 0)
+            raw = log.load_actions.get(lid, -1)
+            mat[n_tr + n_ch + r, t] = raw + 1   # shift: -1→0, 0→1, 1→2
     return mat
 
 
 # ── sub-panel renderers ───────────────────────────────────────────────────────
 
-def _draw_heatmap(ax, step_log, tractor_ids, charger_ids, load_ids) -> None:
+def _draw_heatmap(ax, step_log, tractor_ids, charger_ids, load_ids, events=None) -> None:
     hours   = _to_hours(step_log)
     mat     = _build_heatmap(step_log, tractor_ids, charger_ids, load_ids)
     n_tr, n_ch, n_ld = len(tractor_ids), len(charger_ids), len(load_ids)
@@ -72,8 +92,8 @@ def _draw_heatmap(ax, step_log, tractor_ids, charger_ids, load_ids) -> None:
 
     agent_labels = (
         [f"T {tid.replace('tractor_', '')}" for tid in tractor_ids]
-        + [f"CH {cid.replace('charger_', '')}" for cid in charger_ids]
-        + [f"LD {lid[:10]}" for lid in load_ids]
+        + [f"CH{cid.replace('charger_', '')}" for cid in charger_ids]
+        + [f"LD {lid[:9]}" for lid in load_ids]
     )
 
     x0, x1 = hours[0], hours[-1] + 0.25
@@ -85,7 +105,8 @@ def _draw_heatmap(ax, step_log, tractor_ids, charger_ids, load_ids) -> None:
         + [mcolors.ListedColormap(MARL_CHARGER_CMAP)] * n_ch
         + [mcolors.ListedColormap(MARL_LOAD_CMAP)] * n_ld
     )
-    vmaxes = [1] * n_tr + [2] * n_ch + [1] * n_ld
+    # Load is 3-state (0–2), tractor 2-state (0–1), charger 3-state (0–2)
+    vmaxes = [1] * n_tr + [2] * n_ch + [2] * n_ld
 
     for r in range(n_agents):
         row = mat[r, :].reshape(1, -1)
@@ -128,21 +149,25 @@ def _draw_heatmap(ax, step_log, tractor_ids, charger_ids, load_ids) -> None:
             fontsize=6.5, color=color, va="center", ha="left", rotation=90,
         )
 
-    # Action legend
+    # Action legend — unambiguous colors across all three agent groups
     legend_patches = [
         mpatches.Patch(facecolor=MARL_TRACTOR_CMAP[1], label="Tractor: request charge"),
         mpatches.Patch(facecolor=MARL_TRACTOR_CMAP[0], label="Tractor: idle"),
         mpatches.Patch(facecolor=MARL_CHARGER_CMAP[2], label="Charger: full"),
         mpatches.Patch(facecolor=MARL_CHARGER_CMAP[1], label="Charger: low 50%"),
         mpatches.Patch(facecolor=MARL_CHARGER_CMAP[0], label="Charger: off"),
-        mpatches.Patch(facecolor=MARL_LOAD_CMAP[0],    label="Load: on"),
-        mpatches.Patch(facecolor=MARL_LOAD_CMAP[1],    label="Load: shed"),
+        mpatches.Patch(facecolor=MARL_LOAD_CMAP[2],    label="Load: shed"),
+        mpatches.Patch(facecolor=MARL_LOAD_CMAP[1],    label="Load: on"),
+        mpatches.Patch(facecolor=MARL_LOAD_CMAP[0],    label="Load: off-shift"),
     ]
     ax.legend(handles=legend_patches, loc="upper right", fontsize=5.5,
               ncol=2, framealpha=0.9, title="Actions", title_fontsize=6)
 
+    if events:
+        _draw_event_markers(ax, step_log[0].timestamp, events, y_frac=0.85)
 
-def _draw_soc_traces(ax, step_log, tractor_ids) -> None:
+
+def _draw_soc_traces(ax, step_log, tractor_ids, events=None) -> None:
     hours = _to_hours(step_log)
     _shade_tariff(ax, hours, step_log)
 
@@ -171,6 +196,9 @@ def _draw_soc_traces(ax, step_log, tractor_ids) -> None:
     ax.set_title("Tractor Battery State (SOC)", fontsize=9, fontweight="bold", pad=4)
     ax.tick_params(labelsize=7)
 
+    if events:
+        _draw_event_markers(ax, step_log[0].timestamp, events, y_frac=0.97)
+
     # Combined legend: SOC lines + tariff bands
     tariff_patches = [
         mpatches.Patch(facecolor=TARIFF_VALLE_BG, edgecolor="#BDC3C7", label="Valle (cheap 00–08h)"),
@@ -182,7 +210,7 @@ def _draw_soc_traces(ax, step_log, tractor_ids) -> None:
               loc="lower right", fontsize=6, ncol=2, framealpha=0.9)
 
 
-def _draw_rewards(ax, step_log) -> None:
+def _draw_rewards(ax, step_log, events=None) -> None:
     hours = _to_hours(step_log)
     has_data = any(
         log.cost_reward != 0 or log.task_reward != 0 or log.peak_reward != 0
@@ -220,14 +248,18 @@ def _draw_rewards(ax, step_log) -> None:
     ax2.set_ylabel("Cumulative reward", fontsize=7, color="#1A252F")
     ax2.tick_params(labelsize=6, colors="#1A252F")
 
+    ax.set_xlim(hours[0], hours[-1] + 0.25)
     ax.set_xlabel("Hour of day", fontsize=8)
     ax.set_ylabel("Step reward", fontsize=8)
     ax.set_title("Reward Decomposition", fontsize=9, fontweight="bold", pad=4)
     ax.tick_params(labelsize=7)
     ax.legend(fontsize=6, loc="upper left", ncol=1, framealpha=0.9)
 
+    if events:
+        _draw_event_markers(ax, step_log[0].timestamp, events, y_frac=0.97)
 
-def _draw_grid_power(ax, step_log) -> None:
+
+def _draw_grid_power(ax, step_log, events=None) -> None:
     hours     = _to_hours(step_log)
     grid_vals = [log.grid_kw   for log in step_log]
     pv_vals   = [log.pv_shape * 100 for log in step_log]   # scale to 0-100 for dual axis
@@ -248,6 +280,9 @@ def _draw_grid_power(ax, step_log) -> None:
     ax.tick_params(labelsize=7)
     ax.legend(fontsize=6, loc="upper left", framealpha=0.9)
 
+    if events:
+        _draw_event_markers(ax, step_log[0].timestamp, events, y_frac=0.97)
+
 
 # ── public API ────────────────────────────────────────────────────────────────
 
@@ -256,6 +291,7 @@ def render_marl_log(
     output=None,
     title: str = "MARL Agent Decisions",
     dpi: int = 150,
+    events=None,
 ) -> plt.Figure:
     """Visualise a list of ``MARLStepLog`` entries.
 
@@ -281,7 +317,8 @@ def render_marl_log(
 
     tractor_ids = sorted(step_log[0].tractor_actions.keys())
     charger_ids = sorted(step_log[0].charger_actions.keys())
-    load_ids    = sorted(step_log[0].load_actions.keys())
+    # Collect load_ids across all steps so agents that first appear mid-day are included
+    load_ids    = sorted({lid for s in step_log for lid in s.load_actions})
     n_agents    = len(tractor_ids) + len(charger_ids) + len(load_ids)
 
     heatmap_h = max(n_agents * 0.5, 2.5)   # proportional to number of agents
@@ -300,10 +337,10 @@ def render_marl_log(
     ax_reward = fig.add_subplot(gs[2, 0])    # reward decomposition
     ax_grid   = fig.add_subplot(gs[2, 1])    # grid power + PV
 
-    _draw_heatmap(ax_heat,  step_log, tractor_ids, charger_ids, load_ids)
-    _draw_soc_traces(ax_soc, step_log, tractor_ids)
-    _draw_rewards(ax_reward, step_log)
-    _draw_grid_power(ax_grid, step_log)
+    _draw_heatmap(ax_heat,  step_log, tractor_ids, charger_ids, load_ids, events=events)
+    _draw_soc_traces(ax_soc, step_log, tractor_ids, events=events)
+    _draw_rewards(ax_reward, step_log, events=events)
+    _draw_grid_power(ax_grid, step_log, events=events)
 
     fig.suptitle(title, fontsize=12, fontweight="bold", color="#1A252F", y=0.97)
 
