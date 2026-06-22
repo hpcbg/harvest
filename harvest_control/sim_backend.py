@@ -52,6 +52,8 @@ class _Tractor:
     charger_id: Optional[str] = None
     task: Optional[str] = None
     work_draw_kw: float = 5.0        # consumption while executing a task
+    discharging: bool = False        # V2L mode
+    discharge_kw: float = 0.0
 
 
 @dataclass
@@ -121,7 +123,11 @@ class _ReferenceSim:
         for t in self.tractors:
             if not t.available:
                 continue
-            if t.charging and t.charger_id is not None:
+            if t.discharging and t.discharge_kw > 0:
+                t.soc_kwh = max(0.0, t.soc_kwh - t.discharge_kw * dt_h)
+                if 100 * t.soc_kwh / t.capacity_kwh <= 35.0:
+                    t.discharging, t.discharge_kw = False, 0.0
+            elif t.charging and t.charger_id is not None:
                 ch = next(c for c in self.chargers if c.id == t.charger_id)
                 t.soc_kwh = min(t.capacity_kwh, t.soc_kwh + ch.power_kw * dt_h)
             elif t.task is not None:
@@ -168,7 +174,8 @@ class SimulationFleetInterface(FleetInterface):
         grid = GridState(sim.clock_min, sim.grid_draw_kw(), sim.grid_cap_kw,
                          sim.pv_kw(), tariff, price)
         tractors = [TractorState(t.id, round(100 * t.soc_kwh / t.capacity_kwh, 1),
-                                 round(t.soc_kwh, 2), t.available, t.charging, t.task)
+                                 round(t.soc_kwh, 2), t.available, t.charging, t.task,
+                                 discharging=t.discharging, discharge_kw=t.discharge_kw)
                     for t in sim.tractors]
         chargers = [ChargerState(c.id, c.level, c.power_kw, c.occupied_by) for c in sim.chargers]
         loads = [LoadState(l.id, l.name, l.shed, l.power_kw) for l in sim.loads]
@@ -230,6 +237,22 @@ class SimulationFleetInterface(FleetInterface):
                     return CommandAck(c, False, "critical load")
                 l.shed = (c.type == CommandType.SHED_LOAD)
                 return CommandAck(c, True, "shed" if l.shed else "restored")
+
+            if c.type == CommandType.V2L_START:
+                t = next(x for x in sim.tractors if x.id == c.target_id)
+                if not t.available:
+                    return CommandAck(c, False, "tractor offline")
+                if t.task is not None:
+                    return CommandAck(c, False, "tractor has active task")
+                kw = float(c.value) if c.value else 3.3
+                t.discharging, t.discharge_kw = True, kw
+                t.charging, t.charger_id = False, None
+                return CommandAck(c, True, f"v2l {kw:.1f} kW")
+
+            if c.type == CommandType.V2L_STOP:
+                t = next(x for x in sim.tractors if x.id == c.target_id)
+                t.discharging, t.discharge_kw = False, 0.0
+                return CommandAck(c, True, "v2l stopped")
 
             return CommandAck(c, False, "unknown command")
         except StopIteration:

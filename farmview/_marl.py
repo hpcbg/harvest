@@ -172,6 +172,7 @@ def _draw_soc_traces(ax, step_log, tractor_ids, events=None) -> None:
     _shade_tariff(ax, hours, step_log)
 
     tractor_colors = ["#2E86C1", "#E67E22", "#27AE60", "#8E44AD", "#E74C3C"]
+    v2l_any = False
     for i, tid in enumerate(tractor_ids):
         color  = tractor_colors[i % len(tractor_colors)]
         label  = tid.replace("tractor_", "Tractor ")
@@ -186,6 +187,19 @@ def _draw_soc_traces(ax, step_log, tractor_ids, events=None) -> None:
         if ch_h:
             ax.scatter(ch_h, ch_s, s=18, color=color, marker="o",
                        zorder=4, alpha=0.85)
+
+        # Down-triangles where the tractor is V2L-discharging (SOC dropping for loads)
+        v2l_kw_trace = [getattr(log, "v2l_discharge_kw", 0.0) for log in step_log]
+        # V2L affects any tractor — approximate: mark steps where v2l > 0 and SOC declining
+        prev_soc = [0.0] + soc[:-1]
+        v2l_h = [h for h, v, s, ps in zip(hours, v2l_kw_trace, soc, prev_soc)
+                 if v > 0 and s < ps]
+        v2l_s = [s for v, s, ps in zip(v2l_kw_trace, soc, prev_soc)
+                 if v > 0 and s < ps]
+        if v2l_h:
+            ax.scatter(v2l_h, v2l_s, s=28, color="#1ABC9C", marker="v",
+                       zorder=5, alpha=0.9, label="_v2l" if v2l_any else "V2L discharging")
+            v2l_any = True
 
     ax.axhline(90, color="#BDC3C7", lw=0.8, linestyle="--", zorder=2)
     ax.axhline(20, color="#E74C3C", lw=0.8, linestyle=":",  zorder=2)
@@ -261,11 +275,17 @@ def _draw_rewards(ax, step_log, events=None) -> None:
 
 def _draw_grid_power(ax, step_log, events=None) -> None:
     hours     = _to_hours(step_log)
-    grid_vals = [log.grid_kw   for log in step_log]
+    grid_vals = [log.grid_kw for log in step_log]
+    v2l_vals  = [getattr(log, "v2l_discharge_kw", 0.0) for log in step_log]
     pv_vals   = [log.pv_shape * 100 for log in step_log]   # scale to 0-100 for dual axis
 
     ax.fill_between(hours, grid_vals, alpha=0.45, color="#E74C3C")
     ax.plot(hours, grid_vals, color="#E74C3C", lw=1.2, label="Grid draw (kW)")
+
+    if any(v > 0 for v in v2l_vals):
+        ax.fill_between(hours, v2l_vals, alpha=0.55, color="#1ABC9C")
+        ax.plot(hours, v2l_vals, color="#1ABC9C", lw=1.2, linestyle=":",
+                label="V2L discharge (kW)")
 
     ax2 = ax.twinx()
     ax2.plot(hours, pv_vals, color="#F1C40F", lw=1.5, linestyle="--",

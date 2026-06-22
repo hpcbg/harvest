@@ -39,6 +39,8 @@ def _soc_color(soc: float) -> str:
 def _tractor_status(tr, tasks_by_id: Dict) -> str:
     if not tr.enabled:
         return "offline"
+    if getattr(tr, "is_discharging", False):
+        return "discharging"
     if tr.current_task_id is not None:
         task = tasks_by_id.get(tr.current_task_id)
         if task:
@@ -213,6 +215,20 @@ def _draw_tractor(ax, tr, tasks_by_id: Dict, model) -> None:
         ax.text(bx + 3.5, by + _BODY_H - 4, "⚡",
                 fontsize=6, color="#F1C40F", ha="center", va="top", zorder=8)
 
+    # V2L discharge indicator: down-arrow + kW label
+    if status == "discharging":
+        kw = getattr(tr, "discharge_power_kw", 0.0)
+        ax.text(bx + 3.5, by + _BODY_H - 3, "v",
+                fontsize=7, color="white", ha="center", va="top",
+                fontweight="bold", zorder=8)
+        if kw > 0:
+            ax.text(x, by - 14,
+                    f"V2L {kw:.1f}kW",
+                    fontsize=5, ha="center", va="top", color="#1ABC9C",
+                    fontweight="bold", zorder=9,
+                    bbox=dict(facecolor="white", edgecolor="#1ABC9C",
+                              alpha=0.85, pad=0.4, linewidth=0.8))
+
     # Offline: cross-out overlay
     if status == "offline":
         for x1, y1, x2, y2 in [(bx, by, bx+_BODY_W, by+_BODY_H),
@@ -301,6 +317,10 @@ def _draw_fleet_panel(ax, tractors, tasks_by_id: Dict, model, events=None) -> No
         stxt = TRACTOR_STATUS_LABEL.get(status, status.title())
         if status == "charging" and tr.actual_charge_power_kw > 0:
             stxt += f"  {tr.actual_charge_power_kw:.1f} kW"
+        elif status == "discharging":
+            kw = getattr(tr, "discharge_power_kw", 0.0)
+            if kw > 0:
+                stxt += f"  {kw:.1f} kW"
         ax.text(0.95, cy_bot + h * 0.80, stxt,
                 fontsize=6.5, color=sc, ha="right", va="center",
                 transform=ax.transAxes)

@@ -340,7 +340,7 @@ Event markers (coloured dashed verticals) appear on all dashboard panels and in 
 
 [![MARL farm map with dynamic events](./images/marl_farm_map_dynamic_events.png)](./images/marl_farm_map_dynamic_events.png)
 
-**MARL dashboard with dynamic events** — vertical markers on all four panels show exactly when each disruption occurred, making it easy to read the system's response (SOC dip after breakdown, grid draw drop after cap reduction, load restoration after cap restore):
+**MARL dashboard with dynamic events** — vertical markers on all four panels show exactly when each disruption occurred, making it easy to read the system's response (Grid outage and restore, SOC dip after breakdown, grid draw drop after cap reduction, load restoration after cap restore):
 
 [![MARL dashboard with dynamic events](./images/marl_marl_dashboard_dynamic_events.png)](./images/marl_marl_dashboard_dynamic_events.png)
 

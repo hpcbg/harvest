@@ -282,12 +282,27 @@ prediction:
     epochs: 2000
     dropout: null
 
+# ── Vehicle-to-Load (V2L) ──────────────────────────────────────────────────────
+# Tractors docked at chargers can reverse-discharge to supply farm loads when the
+# grid is overloaded or unavailable.  The bidirectional charger acts as an inverter.
+v2l:
+  enabled: true
+  min_soc_pct: 35.0         # never discharge below this threshold
+  max_discharge_kw: 6.6     # per tractor (bidirectional charger rated power)
+  trigger_overload_kw: 0.5  # activate when (farm_load - PV - grid_cap) > this
+
 # Set to false to run all scenarios without any mid-day disruptions.
 dynamic_events_enabled: true
 
 # Dynamic plan-change events injected during the simulation day.
 # All scenarios run the same events so reactions can be compared across strategies.
 dynamic_events:
+- at: '2026-06-01 06:30:00'
+  type: power_outage
+  label: 'Grid outage - V2L active'
+- at: '2026-06-01 07:30:00'
+  type: grid_restore
+  label: 'Grid restored after outage'
 - at: '2026-06-01 10:00:00'
   type: task_inject
   label: 'Urgent spray injected'

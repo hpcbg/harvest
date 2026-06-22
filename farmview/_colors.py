@@ -43,19 +43,21 @@ DEFAULT_MARKER = ("h", "Task")   # hexagon fallback
 
 # Tractor status → body fill color
 TRACTOR_STATUS_COLOR = {
-    "idle":      "#7F8C8D",
-    "charging":  "#1A6EBD",
-    "transit":   "#E67E22",
-    "executing": "#27AE60",
-    "offline":   "#922B21",
+    "idle":         "#7F8C8D",
+    "charging":     "#1A6EBD",
+    "transit":      "#E67E22",
+    "executing":    "#27AE60",
+    "offline":      "#922B21",
+    "discharging":  "#1ABC9C",   # teal — V2L active, power flowing to farm loads
 }
 
 TRACTOR_STATUS_LABEL = {
-    "idle":      "Idle",
-    "charging":  "Charging",
-    "transit":   "In Transit",
-    "executing": "Executing",
-    "offline":   "Offline",
+    "idle":         "Idle",
+    "charging":     "Charging",
+    "transit":      "In Transit",
+    "executing":    "Executing",
+    "offline":      "Offline",
+    "discharging":  "V2L Active",
 }
 
 # Battery SOC level colors
@@ -86,6 +88,7 @@ EVENT_COLORS = {
     "tractor_offline": "#922B21",  # dark red
     "grid_reduce":    "#E67E22",   # orange
     "grid_restore":   "#1A7A6E",   # teal
+    "power_outage":   "#C0392B",   # red
 }
 
 # Reward component colors

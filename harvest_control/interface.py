@@ -42,6 +42,8 @@ class CommandType(Enum):
     PREEMPT_TASK = "preempt_task"
     SHED_LOAD = "shed_load"
     RESTORE_LOAD = "restore_load"
+    V2L_START = "v2l_start"               # reverse charger: tractor battery -> farm loads
+    V2L_STOP  = "v2l_stop"               # return to normal (charge or idle)
 
 
 # --------------------------------------------------------------------------- #
@@ -56,6 +58,8 @@ class TractorState:
     charging: bool
     current_task: Optional[str]
     position: Optional[Tuple[float, float]] = None
+    discharging: bool = False            # True when in V2L mode (battery -> loads)
+    discharge_kw: float = 0.0           # current V2L discharge rate
 
 
 @dataclass
@@ -140,6 +144,14 @@ class Command:
     @staticmethod
     def restore_load(load_id: str) -> "Command":
         return Command(CommandType.RESTORE_LOAD, load_id)
+
+    @staticmethod
+    def v2l_start(tractor_id: str, discharge_kw: float = 0.0) -> "Command":
+        return Command(CommandType.V2L_START, tractor_id, discharge_kw)
+
+    @staticmethod
+    def v2l_stop(tractor_id: str) -> "Command":
+        return Command(CommandType.V2L_STOP, tractor_id)
 
 
 @dataclass

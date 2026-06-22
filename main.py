@@ -201,6 +201,9 @@ class Tractor:
     battery_swaps_count: int = 0
     # accumulated downtime (hours spent idle waiting for charge or tasks)
     idle_hours: float = 0.0
+    # Vehicle-to-Load (V2L) state
+    is_discharging: bool = False
+    discharge_power_kw: float = 0.0
 
     def battery_kwh(self, model: TractorModel) -> float:
         return (self.soc_percent / 100.0) * model.battery_capacity_kwh
@@ -242,6 +245,11 @@ class SimulationConfig:
     tractor_pv_cfg: TractorPVConfig
     objective_weights: Dict[str, float]
     scenario_def: ScenarioDef
+    # V2L (Vehicle-to-Load) settings
+    v2l_enabled: bool = False
+    v2l_min_soc_pct: float = 35.0
+    v2l_max_discharge_kw: float = 6.6
+    v2l_trigger_overload_kw: float = 0.5
 
 
 @dataclass
@@ -264,7 +272,8 @@ class StepMetrics:
     farm_load_kw: float           # non-tractor consumers
     tractor_charge_kw: float
     total_demand_kw: float        # farm_load + tractor_charge
-    grid_kw: float                # max(0, demand - total_pv)
+    grid_kw: float                # max(0, demand - total_pv - v2l)
+    v2l_discharge_kw: float       # power supplied by tractor batteries to loads
     # Energy / cost accumulators (per step)
     grid_energy_kwh: float
     pv_energy_used_kwh: float
@@ -277,6 +286,7 @@ class StepMetrics:
     tractors_charging: int
     tractors_working: int
     tractors_idle: int
+    tractors_discharging: int
 
 
 # ============================================================
@@ -485,12 +495,15 @@ class Scheduler:
                     old_task.delay_reason = f"preempted by {task.task_id} at {now.strftime('%H:%M')}"
                     best.current_task_id = None
 
-                # Interrupt charging if needed
+                # Interrupt charging or V2L if needed
                 if best.is_charging:
                     best.is_charging = False
                     best.assigned_charger_id = None
                     best.requested_charge_power_kw = 0.0
                     best.actual_charge_power_kw = 0.0
+                if best.is_discharging:
+                    best.is_discharging = False
+                    best.discharge_power_kw = 0.0
 
                 task.assigned_tractor_id = best.tractor_id
                 task.phase = "TRANSIT"
@@ -535,6 +548,7 @@ class Scheduler:
         idle = [
             tr for tr in self.cfg.tractors
             if tr.enabled and tr.current_task_id is None and tr.soc_percent < 90.0
+            and not tr.is_discharging
         ]
         strategy = self.cfg.scenario_def.charging_strategy
 
@@ -752,6 +766,7 @@ class Simulator:
                 always_on=bool(c.get("always_on", False)),
             ))
 
+        v2l_cfg = cfg.get("v2l", {})
         return SimulationConfig(
             start_time=parse_dt(cfg["simulation"]["start_time"]),
             end_time=parse_dt(cfg["simulation"]["end_time"]),
@@ -767,6 +782,10 @@ class Simulator:
             tractor_pv_cfg=tractor_pv_cfg,
             objective_weights=cfg["scheduler"]["objective_weights"],
             scenario_def=self.scenario_def,
+            v2l_enabled=bool(v2l_cfg.get("enabled", False)),
+            v2l_min_soc_pct=float(v2l_cfg.get("min_soc_pct", 35.0)),
+            v2l_max_discharge_kw=float(v2l_cfg.get("max_discharge_kw", 6.6)),
+            v2l_trigger_overload_kw=float(v2l_cfg.get("trigger_overload_kw", 0.5)),
         )
 
     # ── Dynamic events ──────────────────────────────────────────────────────
@@ -847,6 +866,13 @@ class Simulator:
                 detail={"restored_kw": self._original_grid_cap},
             ))
 
+        elif etype == "power_outage":
+            self.config.grid_max_power_kw = 0.0
+            self.fired_events.append(SimEvent(
+                timestamp=now, event_type=etype, label=label,
+                detail={"grid_kw": 0.0},
+            ))
+
     # ── Main loop ───────────────────────────────────────────────────────────
 
     def run(self) -> List[StepMetrics]:
@@ -889,6 +915,10 @@ class Simulator:
             # grid cap + PV surplus - farm load
             net_available_kw = self.config.grid_max_power_kw + total_pv_kw - farm_load_kw
 
+            # --- V2L: activate before charging allocation so discharging tractors
+            #         are excluded from charging and the scheduler knows they're busy ---
+            v2l_kw = self._decide_v2l(farm_load_kw, total_pv_kw)
+
             # --- Scheduling ---
             self.scheduler.maybe_swap_battery(now)
             self.scheduler.assign_tasks(now)          # assign to already-free tractors
@@ -899,12 +929,16 @@ class Simulator:
             else:
                 self.scheduler.allocate_charging(now, net_available_kw)
             self._apply_charging(dt_h)
+            self._apply_v2l_discharge(dt_h)
+            # Recompute v2l_kw after discharge (some tractors may have hit SOC floor)
+            v2l_kw = sum(tr.discharge_power_kw for tr in self.config.tractors)
             self._accumulate_idle(dt_h)
 
             # --- Power accounting ---
             tractor_charge_kw = sum(tr.actual_charge_power_kw for tr in self.config.tractors)
             total_demand_kw = farm_load_kw + tractor_charge_kw
-            grid_kw = max(0.0, total_demand_kw - total_pv_kw)
+            # V2L discharge offsets grid draw directly (battery power to loads)
+            grid_kw = max(0.0, total_demand_kw - total_pv_kw - v2l_kw)
             pv_used_kwh = min(total_demand_kw, total_pv_kw) * dt_h
             grid_energy_kwh = grid_kw * dt_h
             cost_eur = grid_energy_kwh * self.tariff.get_energy_price(now)
@@ -914,15 +948,17 @@ class Simulator:
             missed = sum(1 for t in self.config.tasks if not t.is_done and now > t.latest_finish)
             avg_soc = (sum(tr.soc_percent for tr in self.config.tractors)
                        / max(1, len(self.config.tractors)))
-            n_charging = sum(1 for tr in self.config.tractors if tr.is_charging)
-            n_working = sum(1 for tr in self.config.tractors if tr.current_task_id is not None)
-            n_idle = len(self.config.tractors) - n_charging - n_working
+            n_charging     = sum(1 for tr in self.config.tractors if tr.is_charging)
+            n_discharging  = sum(1 for tr in self.config.tractors if tr.is_discharging)
+            n_working      = sum(1 for tr in self.config.tractors if tr.current_task_id is not None)
+            n_idle         = len(self.config.tractors) - n_charging - n_working - n_discharging
 
             # Record MARL step log (actions already captured; add outcomes + rewards)
             if self.marl_engine:
                 self.marl_engine.record_step(
                     now, grid_kw, cost_eur, completed,
                     self.config.objective_weights,
+                    v2l_kw=v2l_kw,
                 )
 
             self.metrics.append(StepMetrics(
@@ -935,6 +971,7 @@ class Simulator:
                 tractor_charge_kw=tractor_charge_kw,
                 total_demand_kw=total_demand_kw,
                 grid_kw=grid_kw,
+                v2l_discharge_kw=v2l_kw,
                 grid_energy_kwh=grid_energy_kwh,
                 pv_energy_used_kwh=pv_used_kwh,
                 cost_eur=cost_eur,
@@ -944,6 +981,7 @@ class Simulator:
                 tractors_charging=n_charging,
                 tractors_working=n_working,
                 tractors_idle=n_idle,
+                tractors_discharging=n_discharging,
             ))
 
             now += timedelta(minutes=self.config.step_minutes)
@@ -1051,6 +1089,59 @@ class Simulator:
                 added = tr.actual_charge_power_kw * model.charging_efficiency * dt_h
                 tr.set_battery_kwh(model, tr.battery_kwh(model) + added)
 
+    def _decide_v2l(self, farm_load_kw: float, total_pv_kw: float) -> float:
+        """Activate V2L on eligible idle tractors.  Returns total discharge kW this step.
+
+        Triggers when farm loads exceed grid cap + PV by more than trigger_overload_kw
+        (covers both grid overload and full outage when grid_cap == 0).
+        Eligible tractors: enabled, no active task, not already being tasked,
+        SOC >= v2l_min_soc_pct.  Highest-SOC tractors discharge first.
+        """
+        for tr in self.config.tractors:
+            tr.is_discharging = False
+            tr.discharge_power_kw = 0.0
+
+        if not self.config.v2l_enabled:
+            return 0.0
+
+        shortfall = farm_load_kw - total_pv_kw - self.config.grid_max_power_kw
+        if shortfall < self.config.v2l_trigger_overload_kw:
+            return 0.0
+
+        # Tractors eligible for V2L: idle (no task), sufficient SOC
+        eligible = sorted(
+            [tr for tr in self.config.tractors
+             if tr.enabled
+             and tr.current_task_id is None
+             and tr.soc_percent >= self.config.v2l_min_soc_pct],
+            key=lambda t: -t.soc_percent,   # highest SOC first
+        )
+
+        remaining = shortfall
+        total_v2l = 0.0
+        for tr in eligible:
+            if remaining <= 0.01:
+                break
+            kw = min(self.config.v2l_max_discharge_kw, remaining)
+            tr.is_discharging = True
+            tr.discharge_power_kw = kw
+            total_v2l += kw
+            remaining -= kw
+
+        return total_v2l
+
+    def _apply_v2l_discharge(self, dt_h: float) -> None:
+        """Drain SOC of all tractors currently in V2L discharge mode."""
+        model = self.config.tractors_model
+        for tr in self.config.tractors:
+            if tr.is_discharging and tr.discharge_power_kw > 0:
+                drained = tr.discharge_power_kw * dt_h
+                tr.set_battery_kwh(model, tr.battery_kwh(model) - drained)
+                # Stop V2L if SOC has dropped to minimum
+                if tr.soc_percent <= self.config.v2l_min_soc_pct:
+                    tr.is_discharging = False
+                    tr.discharge_power_kw = 0.0
+
     def _accumulate_idle(self, dt_h: float) -> None:
         for tr in self.config.tractors:
             if tr.enabled and tr.current_task_id is None and not tr.is_charging:
@@ -1151,6 +1242,7 @@ class Simulator:
             "tractor_charge_kw": m.tractor_charge_kw,
             "total_demand_kw": m.total_demand_kw,
             "grid_kw": m.grid_kw,
+            "v2l_discharge_kw": m.v2l_discharge_kw,
             "grid_energy_kwh": m.grid_energy_kwh,
             "pv_energy_used_kwh": m.pv_energy_used_kwh,
             "cost_eur": m.cost_eur,
@@ -1160,6 +1252,7 @@ class Simulator:
             "tractors_charging": m.tractors_charging,
             "tractors_working": m.tractors_working,
             "tractors_idle": m.tractors_idle,
+            "tractors_discharging": m.tractors_discharging,
         } for m in self.metrics])
 
     def task_schedule_dataframe(self) -> pd.DataFrame:
@@ -1221,6 +1314,11 @@ def plot_scenario_power(df: pd.DataFrame, out_dir: Path, name: str,
     ax1.plot(s["timestamp"], s["grid_kw"], color=PALETTE["grid"], lw=1.5, label="Grid draw (kW)")
     ax1.plot(s["timestamp"], s["total_demand_kw"], color=PALETTE["charge"],
              lw=1.2, ls="--", label="Total demand (kW)")
+    if "v2l_discharge_kw" in s.columns and s["v2l_discharge_kw"].sum() > 0:
+        ax1.fill_between(s["timestamp"], s["v2l_discharge_kw"],
+                         alpha=0.55, color="#1ABC9C", label="V2L discharge (kW)")
+        ax1.plot(s["timestamp"], s["v2l_discharge_kw"],
+                 color="#1ABC9C", lw=1.2, ls=":")
     ax1.set_ylabel("kW")
     ax1.set_title(f"Power flows — {name}")
     ax1.legend(loc="upper left", fontsize=8)

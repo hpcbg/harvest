@@ -37,6 +37,7 @@ class MARLStepLog:
     grid_kw:          float = 0.0
     cost_eur:         float = 0.0
     completed_tasks:  int   = 0
+    v2l_discharge_kw: float = 0.0       # power supplied by tractor batteries (V2L)
     # Rewards (filled by record_step)
     rewards:          Dict[str, float] = field(default_factory=dict)
     cost_reward:      float = 0.0
@@ -185,7 +186,8 @@ class MARLEnvironment:
         requesting: List[Any] = []
         for tr in self.cfg.tractors:
             tractor_soc[tr.tractor_id] = tr.soc_percent
-            if not tr.enabled or tr.current_task_id is not None or tr.soc_percent >= 90.0:
+            if not tr.enabled or tr.current_task_id is not None or tr.soc_percent >= 90.0 \
+                    or getattr(tr, "is_discharging", False):
                 tractor_actions[tr.tractor_id] = 0   # TRACTOR_IDLE
                 continue
             agent = self.tractor_agents.get(tr.tractor_id)
@@ -281,6 +283,7 @@ class MARLEnvironment:
         cost_eur: float,
         completed: int,
         weights: Dict[str, float],
+        v2l_kw: float = 0.0,
     ) -> None:
         """Finalise the pending log entry with step outcomes and rewards.
 
@@ -323,6 +326,7 @@ class MARLEnvironment:
             grid_kw=grid_kw,
             cost_eur=cost_eur,
             completed_tasks=completed,
+            v2l_discharge_kw=v2l_kw,
             rewards=rewards,
             cost_reward=cost_r,
             peak_reward=peak_r,
