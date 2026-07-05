@@ -103,6 +103,10 @@ class Task:
     delay_reason: str = ""
     interruption_count: int = 0
     relaxed_finish: Optional[datetime] = None    # extended deadline for delayed tasks
+    # ── ROI / diesel-comparison metering ──
+    work_speed_kmh: float = 4.0                   # working (in-field) speed for work-distance derivation
+    work_distance_km: float = 0.0                # derived: duration_hours × work_speed_kmh
+    distance_source: str = "provided"            # provided | calculated | derived | unavailable
 
     def duration_hours(self) -> float:
         return self.duration_minutes / 60.0
@@ -287,6 +291,15 @@ class StepMetrics:
     tractors_working: int
     tractors_idle: int
     tractors_discharging: int
+    # ── ROI asset-level metering (optional; default 0 for backward-compat) ──
+    grid_farm_kwh: float = 0.0          # grid energy serving farm loads
+    grid_tractor_kwh: float = 0.0       # grid energy serving tractor charging
+    charge_cost_eur: float = 0.0        # tariff-specific cost of grid tractor charging
+    charging_loss_kwh: float = 0.0      # charger conversion losses this step
+    farm_pv_used_kwh: float = 0.0       # PV consumed by farm loads
+    tractor_pv_used_kwh: float = 0.0    # PV consumed by tractor charging
+    critical_load_kw: float = 0.0       # active critical-priority farm load (for reliability)
+    energy_price_eur_per_kwh: float = 0.0
 
 
 # ============================================================
@@ -651,6 +664,24 @@ class Simulator:
         )
         self._load_predictor = _load_predictor
         self.metrics: List[StepMetrics] = []
+        # ── ROI asset-level metering: per-tractor activity/energy accumulators ──
+        self.tractor_meter: Dict[str, Dict[str, float]] = {
+            tr.tractor_id: {
+                "distance_km": 0.0,        # transit (travel) distance actually driven
+                "work_distance_km": 0.0,   # in-field work distance (derived)
+                "transit_hours": 0.0,
+                "execution_hours": 0.0,
+                "charging_hours": 0.0,
+                "pto_hours": 0.0,          # execution hours where PTO engaged
+                "charge_input_kwh": 0.0,   # energy drawn from charger (grid side)
+                "drive_kwh": 0.0,          # gross battery energy for driving/transit
+                "work_kwh": 0.0,           # gross battery energy for PTO work
+                "discharge_kwh": 0.0,      # V2L discharge energy
+                "tasks_completed": 0.0,
+            }
+            for tr in self.config.tractors
+        }
+        self.total_charging_loss_kwh: float = 0.0
         # Dynamic event tracking
         self.fired_events: List[SimEvent] = []
         self.injected_task_ids: set = set()
@@ -726,6 +757,7 @@ class Simulator:
         ]
 
         tg = cfg.get("task_generation", {})
+        default_work_speed = float(tg.get("work_speed_kmh", 4.0))
         if tg.get("mode", "static") == "generated":
             task_items = generate_tasks(
                 start_date=cfg["simulation"]["start_time"],
@@ -737,22 +769,30 @@ class Simulator:
         else:
             task_items = cfg.get("tasks", [])
 
-        tasks = [
-            Task(
+        tasks = []
+        for t in task_items:
+            duration_minutes = int(t["duration_minutes"])
+            # Work (in-field) distance is derived from execution time × working speed —
+            # the simulator has no explicit work-distance field for generated tasks.
+            work_speed = float(t.get("work_speed_kmh", default_work_speed))
+            work_distance = round(duration_minutes / 60.0 * work_speed, 3)
+            tasks.append(Task(
                 task_id=t.get("id", t.get("task_id")),
                 name=t["name"],
                 location=(float(t["location"]["x"]), float(t["location"]["y"])),
                 earliest_start=parse_dt(t["earliest_start"]),
                 latest_finish=parse_dt(t["latest_finish"]),
-                duration_minutes=int(t["duration_minutes"]),
+                duration_minutes=duration_minutes,
                 distance_km=float(t["distance_km"]),
                 priority=str(t["priority"]),
                 can_wait=bool(t["can_wait"]),
                 uses_pto=bool(t["uses_pto"]),
                 pto_power_kw=float(t["pto_power_kw"]),
-            )
-            for t in task_items
-        ]
+                work_speed_kmh=work_speed,
+                work_distance_km=work_distance,
+                # transit distance is provided by the generator; work distance is derived
+                distance_source="provided",
+            ))
 
         consumers: List[EnergyConsumer] = []
         for c in cfg.get("energy_consumers", []):
@@ -933,6 +973,9 @@ class Simulator:
             # Recompute v2l_kw after discharge (some tractors may have hit SOC floor)
             v2l_kw = sum(tr.discharge_power_kw for tr in self.config.tractors)
             self._accumulate_idle(dt_h)
+            for tr in self.config.tractors:
+                if tr.is_charging:
+                    self.tractor_meter[tr.tractor_id]["charging_hours"] += dt_h
 
             # --- Power accounting ---
             tractor_charge_kw = sum(tr.actual_charge_power_kw for tr in self.config.tractors)
@@ -941,7 +984,28 @@ class Simulator:
             grid_kw = max(0.0, total_demand_kw - total_pv_kw - v2l_kw)
             pv_used_kwh = min(total_demand_kw, total_pv_kw) * dt_h
             grid_energy_kwh = grid_kw * dt_h
-            cost_eur = grid_energy_kwh * self.tariff.get_energy_price(now)
+            price = self.tariff.get_energy_price(now)
+            cost_eur = grid_energy_kwh * price
+
+            # --- Asset-level metering (allocation for ROI reporting) ---
+            # PV serves farm loads first (critical/priority); the flexible tractor
+            # charging draws whatever grid remains — this matches the smart charging
+            # intent and lets ROI cost tractor charging directly (not from a blended
+            # farm average).  V2L only ever supplies farm loads.
+            pv_surplus_after_farm = max(0.0, total_pv_kw - farm_load_kw)
+            grid_tractor_kw = max(0.0, tractor_charge_kw - pv_surplus_after_farm)
+            grid_tractor_kw = min(grid_tractor_kw, grid_kw)
+            grid_tractor_kwh = grid_tractor_kw * dt_h
+            grid_farm_kwh = grid_energy_kwh - grid_tractor_kwh
+            charge_cost_eur = grid_tractor_kwh * price
+            farm_pv_used_kw = min(farm_load_kw, total_pv_kw)
+            tractor_pv_used_kw = max(0.0, pv_used_kwh / max(dt_h, 1e-9) - farm_pv_used_kw)
+            charge_eff = self.config.tractors_model.charging_efficiency
+            self.total_charging_loss_kwh += tractor_charge_kw * (1.0 - charge_eff) * dt_h
+            critical_kw = sum(
+                c.power_kw for c in self.config.consumers
+                if c.priority == "critical" and c.is_active(now)
+            )
 
             # --- Task & fleet counters ---
             completed = sum(1 for t in self.config.tasks if t.is_done)
@@ -982,6 +1046,14 @@ class Simulator:
                 tractors_working=n_working,
                 tractors_idle=n_idle,
                 tractors_discharging=n_discharging,
+                grid_farm_kwh=grid_farm_kwh,
+                grid_tractor_kwh=grid_tractor_kwh,
+                charge_cost_eur=charge_cost_eur,
+                charging_loss_kwh=tractor_charge_kw * (1.0 - charge_eff) * dt_h,
+                farm_pv_used_kwh=farm_pv_used_kw * dt_h,
+                tractor_pv_used_kwh=tractor_pv_used_kw * dt_h,
+                critical_load_kw=critical_kw,
+                energy_price_eur_per_kwh=price,
             ))
 
             now += timedelta(minutes=self.config.step_minutes)
@@ -1021,6 +1093,8 @@ class Simulator:
             transit_h = task.transit_hours(model.eco_speed_kmh)
             work_h    = task.duration_hours()
 
+            meter = self.tractor_meter[tr.tractor_id]
+
             # ── TRANSIT phase ─────────────────────────────────────────────
             if task.phase == "TRANSIT":
                 if task.started_at is None:
@@ -1035,6 +1109,11 @@ class Simulator:
                 net_drain = max(0.0, transit_drain_per_h - roof_kw) * dt_h
                 tr.set_battery_kwh(model, tr.battery_kwh(model) - net_drain)
 
+                # Metering: gross drive energy + transit time (travel distance is
+                # booked once, on transit completion, to stay exact)
+                meter["transit_hours"] += dt_h
+                meter["drive_kwh"] += transit_drain_per_h * dt_h
+
                 # Update transit progress
                 if transit_h > 0:
                     task.transit_progress_pct = min(100.0,
@@ -1048,6 +1127,7 @@ class Simulator:
                     task.work_start = now + timedelta(hours=dt_h)
                     tr.location     = task.location
                     task.transit_progress_pct = 100.0
+                    meter["distance_km"] += task.distance_km
 
             # ── EXECUTING phase ───────────────────────────────────────────
             elif task.phase == "EXECUTING":
@@ -1062,6 +1142,13 @@ class Simulator:
                 net_drain = max(0.0, work_drain_per_h - roof_kw) * dt_h
                 tr.set_battery_kwh(model, tr.battery_kwh(model) - net_drain)
 
+                # Metering: execution time, PTO hours, gross work energy, work distance
+                meter["execution_hours"] += dt_h
+                meter["work_kwh"] += work_drain_per_h * dt_h
+                if task.uses_pto:
+                    meter["pto_hours"] += dt_h
+                meter["work_distance_km"] += task.work_speed_kmh * dt_h
+
                 # Update work progress
                 task.progress_pct = min(100.0,
                     (elapsed_work_h + dt_h) / max(work_h, 1e-6) * 100.0)
@@ -1074,6 +1161,7 @@ class Simulator:
                     task.is_active    = False
                     task.progress_pct = 100.0
                     tr.current_task_id = None
+                    meter["tasks_completed"] += 1.0
 
             # ── Fallback: legacy tasks without explicit phase ─────────────
             else:
@@ -1088,6 +1176,9 @@ class Simulator:
             if tr.is_charging and tr.actual_charge_power_kw > 0:
                 added = tr.actual_charge_power_kw * model.charging_efficiency * dt_h
                 tr.set_battery_kwh(model, tr.battery_kwh(model) + added)
+                self.tractor_meter[tr.tractor_id]["charge_input_kwh"] += (
+                    tr.actual_charge_power_kw * dt_h
+                )
 
     def _decide_v2l(self, farm_load_kw: float, total_pv_kw: float) -> float:
         """Activate V2L on eligible idle tractors.  Returns total discharge kW this step.
@@ -1137,6 +1228,7 @@ class Simulator:
             if tr.is_discharging and tr.discharge_power_kw > 0:
                 drained = tr.discharge_power_kw * dt_h
                 tr.set_battery_kwh(model, tr.battery_kwh(model) - drained)
+                self.tractor_meter[tr.tractor_id]["discharge_kwh"] += drained
                 # Stop V2L if SOC has dropped to minimum
                 if tr.soc_percent <= self.config.v2l_min_soc_pct:
                     tr.is_discharging = False
@@ -1197,6 +1289,49 @@ class Simulator:
         pv_utilisation_pct = 100.0 * total_pv_kwh / max(1e-6, total_pv_generated)
         swaps = sum(tr.battery_swaps_count for tr in self.config.tractors)
 
+        # ── ROI asset-level aggregates ──────────────────────────────────────
+        farm_load_kwh = sum(m.farm_load_kw * (self.config.step_minutes / 60.0)
+                            for m in self.metrics)
+        grid_farm_kwh = sum(m.grid_farm_kwh for m in self.metrics)
+        grid_tractor_kwh = sum(m.grid_tractor_kwh for m in self.metrics)
+        tractor_charge_cost_eur = sum(m.charge_cost_eur for m in self.metrics)
+        farm_pv_used_kwh = sum(m.farm_pv_used_kwh for m in self.metrics)
+        tractor_pv_used_kwh = sum(m.tractor_pv_used_kwh for m in self.metrics)
+        v2l_discharge_kwh = sum(m.v2l_discharge_kw * (self.config.step_minutes / 60.0)
+                                for m in self.metrics)
+
+        meter = self.tractor_meter
+        fleet_transit_distance_km = sum(m["distance_km"] for m in meter.values())
+        fleet_work_distance_km = sum(m["work_distance_km"] for m in meter.values())
+        fleet_execution_hours = sum(m["execution_hours"] for m in meter.values())
+        fleet_transit_hours = sum(m["transit_hours"] for m in meter.values())
+        fleet_charging_hours = sum(m["charging_hours"] for m in meter.values())
+        fleet_pto_hours = sum(m["pto_hours"] for m in meter.values())
+        fleet_charge_input_kwh = sum(m["charge_input_kwh"] for m in meter.values())
+        fleet_drive_kwh = sum(m["drive_kwh"] for m in meter.values())
+        fleet_work_kwh = sum(m["work_kwh"] for m in meter.values())
+        fleet_discharge_kwh = sum(m["discharge_kwh"] for m in meter.values())
+        fleet_idle_hours = sum(tr.idle_hours for tr in self.config.tractors)
+        battery_discharge_kwh = fleet_drive_kwh + fleet_work_kwh + fleet_discharge_kwh
+
+        per_tractor = []
+        for tr in self.config.tractors:
+            m = meter[tr.tractor_id]
+            per_tractor.append({
+                "tractor_id": tr.tractor_id,
+                "has_pv_roof": bool(tr.has_pv_roof),
+                "distance_km": round(m["distance_km"], 3),
+                "work_distance_km": round(m["work_distance_km"], 3),
+                "transit_hours": round(m["transit_hours"], 3),
+                "execution_hours": round(m["execution_hours"], 3),
+                "charging_hours": round(m["charging_hours"], 3),
+                "idle_hours": round(tr.idle_hours, 3),
+                "pto_hours": round(m["pto_hours"], 3),
+                "charge_input_kwh": round(m["charge_input_kwh"], 3),
+                "discharge_kwh": round(m["discharge_kwh"], 3),
+                "tasks_completed": int(m["tasks_completed"]),
+            })
+
         return {
             "scenario": self.scenario_def.name,
             "charging_strategy": self.scenario_def.charging_strategy,
@@ -1229,6 +1364,27 @@ class Simulator:
             "battery_swaps": swaps,
             # Normalised energy — exposes night_only "cheap because less work" effect
             "grid_kwh_per_completed_task": round(total_grid_kwh / max(1, completed), 2),
+            # ── ROI asset-level metering ──
+            "farm_load_kwh": round(farm_load_kwh, 3),
+            "grid_farm_kwh": round(grid_farm_kwh, 3),
+            "grid_tractor_kwh": round(grid_tractor_kwh, 3),
+            "tractor_charge_input_kwh": round(fleet_charge_input_kwh, 3),
+            "tractor_charge_cost_eur": round(tractor_charge_cost_eur, 4),
+            "charging_loss_kwh": round(self.total_charging_loss_kwh, 3),
+            "farm_pv_used_kwh": round(farm_pv_used_kwh, 3),
+            "tractor_pv_used_kwh": round(tractor_pv_used_kwh, 3),
+            "v2l_discharge_kwh": round(v2l_discharge_kwh, 3),
+            "battery_discharge_kwh": round(battery_discharge_kwh, 3),
+            "fleet_transit_distance_km": round(fleet_transit_distance_km, 3),
+            "fleet_work_distance_km": round(fleet_work_distance_km, 3),
+            "fleet_total_distance_km": round(fleet_transit_distance_km + fleet_work_distance_km, 3),
+            "fleet_execution_hours": round(fleet_execution_hours, 3),
+            "fleet_transit_hours": round(fleet_transit_hours, 3),
+            "fleet_operating_hours": round(fleet_execution_hours + fleet_transit_hours, 3),
+            "fleet_charging_hours": round(fleet_charging_hours, 3),
+            "fleet_idle_hours": round(fleet_idle_hours, 3),
+            "fleet_pto_hours": round(fleet_pto_hours, 3),
+            "per_tractor": per_tractor,
         }
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -1279,6 +1435,150 @@ class Simulator:
             "status_label": t.status_label,
         } for t in self.config.tasks]
         return pd.DataFrame(rows).sort_values("earliest_start").reset_index(drop=True)
+
+    # ── Structured records for the ROI engine (no file I/O) ─────────────────
+
+    def timeseries_records(self) -> List[Dict[str, Any]]:
+        """Per-step time-series as a list of plain dicts (ROI-friendly)."""
+        return [{
+            "timestamp": m.timestamp.isoformat(sep=" "),
+            "scenario": m.scenario,
+            "farm_fixed_pv_kw": m.farm_fixed_pv_kw,
+            "tractor_pv_kw": m.tractor_pv_kw,
+            "total_pv_kw": m.total_pv_kw,
+            "farm_load_kw": m.farm_load_kw,
+            "tractor_charge_kw": m.tractor_charge_kw,
+            "total_demand_kw": m.total_demand_kw,
+            "grid_kw": m.grid_kw,
+            "grid_farm_kwh": m.grid_farm_kwh,
+            "grid_tractor_kwh": m.grid_tractor_kwh,
+            "v2l_discharge_kw": m.v2l_discharge_kw,
+            "grid_energy_kwh": m.grid_energy_kwh,
+            "pv_energy_used_kwh": m.pv_energy_used_kwh,
+            "charge_cost_eur": m.charge_cost_eur,
+            "cost_eur": m.cost_eur,
+            "critical_load_kw": m.critical_load_kw,
+            "energy_price_eur_per_kwh": m.energy_price_eur_per_kwh,
+        } for m in self.metrics]
+
+    def task_records(self) -> List[Dict[str, Any]]:
+        """Per-task records incl. distance/work-time fields for the diesel model."""
+        rows = []
+        for t in self.config.tasks:
+            transit_km = t.distance_km
+            work_km = t.work_distance_km
+            rows.append({
+                "task_id": t.task_id,
+                "name": t.name,
+                "priority": t.priority,
+                "assigned_tractor": t.assigned_tractor_id,
+                "uses_pto": bool(t.uses_pto),
+                "pto_power_kw": t.pto_power_kw,
+                "duration_minutes": t.duration_minutes,
+                "execution_hours": round(t.duration_minutes / 60.0, 4),
+                "transit_distance_km": round(transit_km, 3),
+                "work_distance_km": round(work_km, 3),
+                "total_distance_km": round(transit_km + work_km, 3),
+                "distance_source": t.distance_source,
+                "is_done": bool(t.is_done),
+                "phase": t.phase,
+            })
+        return rows
+
+
+# ============================================================
+# Reusable simulation API (used by the ROI engine)
+# ============================================================
+
+def run_simulation(
+    config: Dict[str, Any],
+    selected_scenarios: Optional[List[str]] = None,
+    output_enabled: bool = False,
+    start_date: Optional[Any] = None,
+    seed: Optional[int] = None,
+    include_dynamic_events: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Run the pilot6 simulation and return structured Python data.
+
+    This is the reusable entry point behind both the dashboard and the ROI
+    engine.  It never writes CSV files or charts (that stays in ``main()``).
+
+    Parameters
+    ----------
+    config
+        A fully merged configuration dict (as produced by ``load_yaml_with_local``).
+    selected_scenarios
+        Names of scenarios to run.  ``None`` runs every scenario in the config.
+    output_enabled
+        Kept for API symmetry; this function never writes files regardless.
+    start_date
+        Optional calendar date (``datetime`` or ``"YYYY-MM-DD[ HH:MM:SS]"``) to
+        simulate.  The window is set to that whole day (00:00 → next 00:00).
+        When supplied, one-off dynamic demo events are disabled by default so
+        long-period ROI aggregation stays deterministic.
+    seed
+        Optional deterministic task-generation seed override.
+    include_dynamic_events
+        Force dynamic events on/off; defaults to off when ``start_date`` is set,
+        otherwise leaves the config value untouched.
+
+    Returns
+    -------
+    dict with keys ``meta`` and ``scenarios`` (list of per-scenario dicts each
+    carrying ``summary``, ``timeseries`` and ``tasks``).
+    """
+    cfg = copy.deepcopy(config)
+
+    if start_date is not None:
+        if isinstance(start_date, datetime):
+            sd = start_date
+        else:
+            sd = parse_dt(str(start_date)) if " " in str(start_date) else \
+                datetime.fromisoformat(str(start_date))
+        sd = datetime(sd.year, sd.month, sd.day)
+        cfg.setdefault("simulation", {})
+        cfg["simulation"]["start_time"] = sd.strftime("%Y-%m-%d %H:%M:%S")
+        cfg["simulation"]["end_time"] = (sd + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        if include_dynamic_events is None:
+            cfg["dynamic_events_enabled"] = False
+
+    if include_dynamic_events is not None:
+        cfg["dynamic_events_enabled"] = bool(include_dynamic_events)
+
+    if seed is not None:
+        cfg.setdefault("task_generation", {})["seed"] = int(seed)
+
+    scenario_cfgs = cfg.get("scenarios", [])
+    if selected_scenarios:
+        wanted = set(selected_scenarios)
+        scenario_cfgs = [s for s in scenario_cfgs if s["name"] in wanted]
+
+    scenarios_out: List[Dict[str, Any]] = []
+    for s in scenario_cfgs:
+        sdef = ScenarioDef(
+            name=s["name"],
+            charging_strategy=s["charging_strategy"],
+            tractor_pv_enabled=bool(s.get("tractor_pv_enabled", False)),
+            load_shedding=bool(s.get("load_shedding", False)),
+            use_marl=bool(s.get("use_marl", False)),
+        )
+        sim = Simulator(cfg, sdef)
+        sim.run()
+        scenarios_out.append({
+            "summary": sim.summarize(),
+            "timeseries": sim.timeseries_records(),
+            "tasks": sim.task_records(),
+        })
+
+    return {
+        "meta": {
+            "start_time": cfg["simulation"]["start_time"],
+            "end_time": cfg["simulation"]["end_time"],
+            "seed": int(cfg.get("task_generation", {}).get("seed", 0)),
+            "scenarios_run": [s["name"] for s in scenario_cfgs],
+        },
+        "scenarios": scenarios_out,
+    }
 
 
 # ============================================================

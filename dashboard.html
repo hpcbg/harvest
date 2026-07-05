@@ -174,12 +174,60 @@
     /* Error */
     .errbanner{background:var(--red-lt);border:1px solid var(--red);border-radius:var(--r);padding:12px 16px;font-size:12px;color:var(--red);font-family:var(--mono);display:none;white-space:pre-wrap;word-break:break-all}
     hr{border:none;border-top:1px solid var(--border)}
+    /* ── View tabs (Operations / ROI) ── */
+    .vtabs{display:flex;gap:4px;margin-left:6px}
+    .vtab{padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;color:var(--text3);border:1px solid var(--border);background:var(--bg3);user-select:none;transition:all .15s}
+    .vtab:hover{border-color:var(--border2)}
+    .vtab.active{background:var(--amber-lt);border-color:var(--amber-dk);color:var(--amber);font-weight:600}
+    .sidebar-view{display:flex;flex-direction:column;gap:16px}
+    /* ── ROI form controls ── */
+    .roi-field{margin-bottom:9px}
+    .roi-field label{display:block;font-size:11px;color:var(--text2);margin-bottom:4px}
+    .roi-field .unit{color:var(--text3);font-size:10px;font-weight:400}
+    .roi-input,.roi-select{width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:12px;font-family:var(--mono)}
+    .roi-input:focus,.roi-select:focus{outline:none;border-color:var(--amber)}
+    .roi-chk{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text2);padding:5px 0;cursor:pointer}
+    .roi-chk input{margin-top:2px}
+    .roi-chk .rc-sub{font-size:10px;color:var(--text3)}
+    details.roi-panel{border:1px solid var(--border);border-radius:var(--r);background:var(--bg2)}
+    details.roi-panel>summary{cursor:pointer;padding:9px 12px;font-size:12px;font-weight:500;color:var(--text2);list-style:none;user-select:none;display:flex;justify-content:space-between}
+    details.roi-panel>summary::-webkit-details-marker{display:none}
+    details.roi-panel>summary::after{content:'▸';color:var(--text3)}
+    details.roi-panel[open]>summary::after{content:'▾'}
+    details.roi-panel[open]>summary{border-bottom:1px solid var(--border);color:var(--amber)}
+    .roi-panel-body{padding:10px 12px}
+    .roi-grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    /* ── ROI results ── */
+    .roi-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+    .roi-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px}
+    .roi-card .rl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em}
+    .roi-card .rv{font-family:var(--mono);font-size:18px;font-weight:700;color:var(--text);margin-top:4px}
+    .roi-card .rs{font-size:10px;color:var(--text3);margin-top:3px}
+    .na{color:var(--text3)!important}
+    .roi-warn{background:var(--amber-lt);border:1px solid var(--amber-dk);border-radius:var(--r);padding:9px 13px;font-size:12px;color:var(--amber-dk);line-height:1.5}
+    .roi-warn.red{background:var(--red-lt);border-color:var(--red);color:var(--red)}
+    .roi-warn.info{background:var(--blue-lt);border-color:var(--blue);color:var(--blue)}
+    .roi-warns{display:flex;flex-direction:column;gap:6px}
+    .roi-table-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:var(--rl);overflow-x:auto}
+    .roi-table{width:100%;border-collapse:collapse;font-size:11px}
+    .roi-table th{font-size:10px;font-family:var(--mono);text-transform:uppercase;color:var(--text3);padding:8px 10px;text-align:right;border-bottom:1px solid var(--border);background:var(--bg3);white-space:nowrap}
+    .roi-table th:first-child{text-align:left}
+    .roi-table td{padding:7px 10px;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono);white-space:nowrap}
+    .roi-table td:first-child{text-align:left;font-family:var(--sans)}
+    .roi-table tr:last-child td{border-bottom:none}
+    .roi-table tr.portfolio-row td{background:var(--amber-lt);font-weight:600}
+    .meta-chips{display:flex;flex-wrap:wrap;gap:8px}
+    .meta-chip{background:var(--bg3);border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:10px;font-family:var(--mono);color:var(--text3)}
+    .exp-row{display:flex;gap:8px;margin-left:auto}
+    .exp-btn{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:6px 12px;font-size:11px;font-family:var(--mono);cursor:pointer;color:var(--text2)}
+    .exp-btn:hover{border-color:var(--amber);color:var(--amber)}
     @media(max-width:900px){
       .shell{grid-template-columns:1fr}
       header{grid-column:1}
       .sidebar{border-right:none;border-bottom:1px solid var(--border)}
       .kpi-grid{grid-template-columns:repeat(2,1fr)}
       .chart-row{grid-template-columns:1fr}
+      .roi-cards{grid-template-columns:repeat(2,1fr)}
     }
   </style>
 </head>
@@ -188,6 +236,10 @@
   <header>
     <div class="logo">HARVEST</div>
     <div class="logo-sub">pilot6 · smart recharging · v0.2</div>
+    <div class="vtabs">
+      <div class="vtab active" id="vtab-ops" onclick="switchView('ops')">Operations</div>
+      <div class="vtab" id="vtab-roi" onclick="switchView('roi')">ROI &amp; Investment</div>
+    </div>
     <div class="spacer"></div>
     <button class="theme-btn" id="tbtn" onclick="toggleTheme()">☀</button>
     <div class="hbadge" id="hsvr">server: checking…</div>
@@ -202,6 +254,7 @@
       → <em>Shields are UP for this site</em> → turn them <strong>DOWN</strong><br>
       Then reload the page.
     </div>
+    <div id="ops-controls" class="sidebar-view">
     <hr>
     <div>
       <div class="slabel">Grid &amp; PV</div>
@@ -233,9 +286,64 @@
       <span id="btxt">RUN SIMULATION</span>
       <div class="spin" id="spin"></div>
     </button>
+    </div><!-- /ops-controls -->
+
+    <div id="roi-controls" class="sidebar-view" style="display:none">
+      <div>
+        <div class="slabel">Analysis period (operational data)</div>
+        <div class="roi-field"><label>Start date</label><input type="date" class="roi-input" id="roi-start" value="2026-01-01"></div>
+        <div class="roi-field"><label>End date</label><input type="date" class="roi-input" id="roi-end" value="2026-12-31"></div>
+        <div class="roi-field"><label>Period method</label>
+          <select class="roi-select" id="roi-mode">
+            <option value="auto">Auto (exact ≤ 90 d, else representative)</option>
+            <option value="exact">Exact daily</option>
+            <option value="representative_month">Representative month</option>
+          </select>
+        </div>
+        <div class="roi-field"><label>Representative days / month</label><input type="number" class="roi-input" id="roi-repdays" value="1" min="1" max="28"></div>
+        <div class="roi-field"><label>Operating scenario</label>
+          <select class="roi-select" id="roi-scenario">
+            <option value="full_smart">full_smart</option>
+            <option value="smart">smart</option>
+            <option value="pv_roof">pv_roof</option>
+            <option value="marl">marl</option>
+          </select>
+        </div>
+      </div>
+      <hr>
+      <div>
+        <div class="slabel">Financial horizon (investment)</div>
+        <div class="roi-field"><label>Horizon <span class="unit">years</span></label><input type="number" class="roi-input" id="roi-horizon" value="10" min="1" max="40"></div>
+        <div class="roi-field"><label>Discount rate <span class="unit">%</span></label><input type="number" step="0.1" class="roi-input" id="roi-discount" value="6.0"></div>
+        <div class="roi-field"><label>Currency</label><input type="text" class="roi-input" id="roi-currency" value="EUR"></div>
+      </div>
+      <hr>
+      <div>
+        <div class="slabel">Investments</div>
+        <label class="roi-chk"><input type="checkbox" id="inv-electric_fleet" checked> <span>Electric fleet vs diesel<br><span class="rc-sub">tractors + chargers vs diesel</span></span></label>
+        <label class="roi-chk"><input type="checkbox" id="inv-farm_pv" checked> <span>Fixed farm PV</span></label>
+        <label class="roi-chk"><input type="checkbox" id="inv-tractor_roof_pv" checked> <span>Tractor-roof PV</span></label>
+        <label class="roi-chk"><input type="checkbox" id="inv-backup_islanding"> <span>Backup / islanding<br><span class="rc-sub">reliability during outages</span></span></label>
+        <label class="roi-chk"><input type="checkbox" id="inv-portfolio" checked> <span>Combined HARVEST portfolio<br><span class="rc-sub">sequential, no double-count</span></span></label>
+      </div>
+      <hr>
+      <div>
+        <div class="slabel">Assumptions</div>
+        <div id="roi-assumptions" style="display:flex;flex-direction:column;gap:8px"></div>
+      </div>
+      <button class="run-btn" id="roi-runbtn" onclick="runRoi()">
+        <span id="roi-btxt">RUN ROI ANALYSIS</span>
+        <div class="spin" id="roi-spin"></div>
+      </button>
+      <div style="font-size:10px;color:var(--text3);line-height:1.5">
+        Values left at zero are shown as <strong>Input required</strong>. Defaults are
+        demonstration figures, not market quotations.
+      </div>
+    </div><!-- /roi-controls -->
   </aside>
 
   <main class="main">
+    <div id="ops-main" style="display:flex;flex-direction:column;gap:16px;flex:1">
     <div class="empty" id="empty">
       <div style="font-size:36px;opacity:.1">⊿</div>
       <div style="font-size:14px">No results yet</div>
@@ -248,6 +356,22 @@
     </div>
     <div class="errbanner" id="errbanner"></div>
     <div id="results" style="display:none;flex-direction:column;gap:16px;"></div>
+    </div><!-- /ops-main -->
+
+    <div id="roi-main" style="display:none;flex-direction:column;gap:16px;flex:1">
+      <div class="empty" id="roi-empty">
+        <div style="font-size:36px;opacity:.1">€</div>
+        <div style="font-size:14px">No ROI results yet</div>
+        <div style="font-size:12px;margin-top:4px">Set the period, horizon &amp; assumptions · Run ROI</div>
+      </div>
+      <div class="prog-wrap" id="roi-pgwrap">
+        <div class="prog-label" id="roi-pglbl">Running ROI…</div>
+        <div class="prog-bg"><div class="prog-fill" id="roi-pgfill"></div></div>
+        <div class="prog-log" id="roi-pglog"></div>
+      </div>
+      <div class="errbanner" id="roi-errbanner"></div>
+      <div id="roi-results" style="display:none;flex-direction:column;gap:16px"></div>
+    </div><!-- /roi-main -->
   </main>
 </div>
 
@@ -372,7 +496,8 @@ function gc(){
 function redrawCharts(theme){
   const l=theme==='light';
   const g=l?'rgba(0,0,0,.06)':'rgba(255,255,255,.05)',t=l?'#8A8880':'#6b6860';
-  Object.values(CI).forEach(c=>{
+  const all=Object.assign({},CI,(typeof RCI!=='undefined'?RCI:{}));
+  Object.values(all).forEach(c=>{
     c.options.scales&&Object.values(c.options.scales).forEach(ax=>{if(ax.grid)ax.grid.color=g;if(ax.ticks)ax.ticks.color=t;});
     c.update('none');
   });
@@ -622,6 +747,389 @@ function switchTab(i){
         }).join('')}
       </tbody>
     </table>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ROI & Investment view
+   ═══════════════════════════════════════════════════════════════════════ */
+let currentView='ops';
+function switchView(v){
+  currentView=v;
+  document.getElementById('vtab-ops').classList.toggle('active',v==='ops');
+  document.getElementById('vtab-roi').classList.toggle('active',v==='roi');
+  document.getElementById('ops-controls').style.display=v==='ops'?'flex':'none';
+  document.getElementById('roi-controls').style.display=v==='roi'?'flex':'none';
+  document.getElementById('ops-main').style.display=v==='ops'?'flex':'none';
+  document.getElementById('roi-main').style.display=v==='roi'?'flex':'none';
+  if(v==='roi' && !roiBuilt){buildRoiPanels();roiBuilt=true;}
+}
+
+/* ── Assumption schema (units shown next to every field) ── */
+const ROI_SCHEMA={
+  financial:{title:'Financial',fields:[
+    {k:'general_cost_escalation_pct',l:'General escalation',u:'%',d:2.0,s:0.1},
+    {k:'electricity_price_escalation_pct',l:'Electricity escalation',u:'%',d:2.5,s:0.1},
+    {k:'diesel_price_escalation_pct',l:'Diesel escalation',u:'%',d:2.5,s:0.1},
+  ]},
+  diesel:{title:'Diesel assumptions',fields:[
+    {k:'fuel_price_eur_per_litre',l:'Fuel price',u:'€/L',d:0,s:0.01},
+    {k:'travel_litres_per_100km',l:'Travel use',u:'L/100km',d:0,s:0.5},
+    {k:'pto_litres_per_hour',l:'PTO / work use',u:'L/h',d:0,s:0.1},
+    {k:'idle_litres_per_hour',l:'Idle use',u:'L/h',d:0,s:0.1},
+    {k:'maintenance_eur_per_hour',l:'Maintenance',u:'€/h',d:0,s:0.1},
+    {k:'co2_kg_per_litre',l:'CO₂ factor',u:'kg/L',d:0,s:0.01},
+  ]},
+  electric_fleet:{title:'Electric tractors & chargers',fields:[
+    {k:'electric_tractor_purchase_eur',l:'E-tractor price',u:'€',d:0,s:1000},
+    {k:'diesel_equivalent_purchase_eur',l:'Diesel tractor price',u:'€',d:0,s:1000},
+    {k:'electric_maintenance_eur_per_hour',l:'E-maintenance',u:'€/h',d:0,s:0.1},
+    {k:'charger_capex_eur_each',l:'Charger CAPEX',u:'€ each',d:0,s:100},
+    {k:'charger_installation_eur_each',l:'Charger install',u:'€ each',d:0,s:100},
+    {k:'grant_eur',l:'Grant / subsidy',u:'€',d:0,s:500},
+    {k:'residual_value_eur',l:'Residual value',u:'€',d:0,s:500},
+    {k:'battery_replacement_year',l:'Battery replace year',u:'yr',d:'',s:1},
+    {k:'battery_replacement_eur',l:'Battery replace cost',u:'€',d:0,s:500},
+  ]},
+  farm_pv:{title:'Farm PV assumptions',checks:[{k:'export_enabled',l:'Export surplus enabled',d:false}],fields:[
+    {k:'capex_eur_per_kwp',l:'CAPEX',u:'€/kWp',d:0,s:10},
+    {k:'fixed_installation_eur',l:'Fixed install',u:'€',d:0,s:100},
+    {k:'annual_om_pct_of_capex',l:'O&M',u:'%/yr',d:0,s:0.1},
+    {k:'annual_degradation_pct',l:'Degradation',u:'%/yr',d:0.5,s:0.1},
+    {k:'feed_in_tariff_eur_per_kwh',l:'Feed-in tariff',u:'€/kWh',d:0,s:0.01},
+    {k:'grant_eur',l:'Grant / subsidy',u:'€',d:0,s:500},
+    {k:'inverter_replacement_year',l:'Inverter replace year',u:'yr',d:'',s:1},
+    {k:'inverter_replacement_eur',l:'Inverter cost',u:'€',d:0,s:100},
+    {k:'residual_value_eur',l:'Residual value',u:'€',d:0,s:100},
+  ]},
+  tractor_roof_pv:{title:'Tractor-roof PV assumptions',fields:[
+    {k:'capex_eur_per_tractor',l:'CAPEX',u:'€/tractor',d:0,s:100},
+    {k:'installation_eur_per_tractor',l:'Install',u:'€/tractor',d:0,s:50},
+    {k:'annual_om_eur_per_tractor',l:'O&M',u:'€/tractor/yr',d:0,s:10},
+    {k:'annual_degradation_pct',l:'Degradation',u:'%/yr',d:0.5,s:0.1},
+    {k:'grant_eur',l:'Grant / subsidy',u:'€',d:0,s:100},
+  ]},
+  outages:{title:'Outage & reliability',checks:[
+      {k:'enabled',l:'Enable outage analysis',d:false},
+      {k:'islanding_enabled',l:'Islanding-capable inverter',d:false},
+      {k:'v2l_enabled',l:'V2L available in outage',d:false}],fields:[
+    {k:'frequency_per_year',l:'Frequency',u:'/yr',d:0,s:0.5},
+    {k:'average_duration_hours',l:'Avg duration',u:'h',d:0,s:0.5},
+    {k:'value_of_lost_load_eur_per_kwh',l:'Value of lost load',u:'€/kWh',d:0,s:0.5},
+    {k:'downtime_cost_eur_per_hour',l:'Downtime cost',u:'€/h',d:0,s:5},
+    {k:'task_disruption_cost_eur_per_hour',l:'Task disruption',u:'€/h',d:0,s:5},
+    {k:'critical_load_kw',l:'Critical load',u:'kW',d:0,s:0.1},
+    {k:'backup_battery_kwh',l:'Backup battery',u:'kWh',d:0,s:1},
+    {k:'backup_max_power_kw',l:'Backup power',u:'kW',d:0,s:0.5},
+    {k:'islanding_capex_eur',l:'Islanding CAPEX',u:'€',d:0,s:500},
+    {k:'backup_capex_eur',l:'Backup CAPEX',u:'€',d:0,s:500},
+  ]},
+};
+let roiBuilt=false;
+let roiDefaults=null;
+
+function buildRoiPanels(){
+  const host=document.getElementById('roi-assumptions');
+  host.innerHTML=Object.entries(ROI_SCHEMA).map(([grp,spec])=>{
+    const checks=(spec.checks||[]).map(c=>
+      `<label class="roi-chk"><input type="checkbox" id="a-${grp}-${c.k}"> <span>${c.l}</span></label>`).join('');
+    const fields=spec.fields.map(f=>
+      `<div class="roi-field"><label>${f.l} <span class="unit">${f.u}</span></label>
+         <input type="number" step="${f.s||'any'}" class="roi-input" id="a-${grp}-${f.k}" value="${f.d}"></div>`).join('');
+    const open=(grp==='diesel'||grp==='farm_pv')?' open':'';
+    return `<details class="roi-panel"${open}><summary>${spec.title}</summary>
+      <div class="roi-panel-body">${checks}${checks?'<hr style="margin:6px 0">':''}<div class="roi-grid2">${fields}</div></div></details>`;
+  }).join('');
+  // Prefill from /config roi defaults (best-effort).
+  fetch(SRV+'/config',{mode:'cors'}).then(r=>r.json()).then(cfg=>{
+    roiDefaults=cfg.roi||{};
+    for(const [grp,spec] of Object.entries(ROI_SCHEMA)){
+      const gd=(roiDefaults[grp])||{};
+      (spec.fields||[]).forEach(f=>{
+        if(gd[f.k]!==undefined && gd[f.k]!==null){const e=document.getElementById(`a-${grp}-${f.k}`);if(e)e.value=gd[f.k];}
+      });
+      (spec.checks||[]).forEach(c=>{
+        if(gd[c.k]!==undefined){const e=document.getElementById(`a-${grp}-${c.k}`);if(e)e.checked=!!gd[c.k];}
+      });
+    }
+    const a=roiDefaults.analysis||{}, fn=roiDefaults.financial||{};
+    if(a.default_start_date)document.getElementById('roi-start').value=a.default_start_date;
+    if(a.default_end_date)document.getElementById('roi-end').value=a.default_end_date;
+    if(a.period_mode)document.getElementById('roi-mode').value=a.period_mode;
+    if(a.financial_horizon_years)document.getElementById('roi-horizon').value=a.financial_horizon_years;
+    if(a.scenario)document.getElementById('roi-scenario').value=a.scenario;
+    if(fn.discount_rate_pct!==undefined)document.getElementById('roi-discount').value=fn.discount_rate_pct;
+  }).catch(()=>{});
+}
+
+function collectRoiAssumptions(){
+  const out={};
+  for(const [grp,spec] of Object.entries(ROI_SCHEMA)){
+    out[grp]={};
+    (spec.fields||[]).forEach(f=>{
+      const e=document.getElementById(`a-${grp}-${f.k}`);if(!e)return;
+      const raw=e.value.trim();
+      if(f.k.endsWith('_year')){out[grp][f.k]=raw===''?null:parseInt(raw);}
+      else{out[grp][f.k]=raw===''?0:parseFloat(raw);}
+    });
+    (spec.checks||[]).forEach(c=>{
+      const e=document.getElementById(`a-${grp}-${c.k}`);if(e)out[grp][c.k]=e.checked;
+    });
+  }
+  return out;
+}
+
+function selectedInvestments(){
+  return ['electric_fleet','farm_pv','tractor_roof_pv','backup_islanding','portfolio']
+    .filter(id=>document.getElementById('inv-'+id).checked);
+}
+
+function setRoiRun(on){
+  document.getElementById('roi-runbtn').disabled=on;
+  document.getElementById('roi-btxt').style.display=on?'none':'inline';
+  document.getElementById('roi-spin').style.display=on?'block':'none';
+}
+function roiProg(l,p,lg){
+  document.getElementById('roi-pgwrap').style.display='flex';
+  document.getElementById('roi-pglbl').textContent=l;
+  document.getElementById('roi-pgfill').style.width=p+'%';
+  if(lg!==undefined)document.getElementById('roi-pglog').textContent=lg;
+}
+function roiHideProg(){document.getElementById('roi-pgwrap').style.display='none';}
+function roiShowErr(m){const e=document.getElementById('roi-errbanner');e.textContent=m;e.style.display='block';}
+function roiHideErr(){document.getElementById('roi-errbanner').style.display='none';}
+
+let lastRoi=null;
+async function runRoi(){
+  const inv=selectedInvestments();
+  if(!inv.length){roiShowErr('Select at least one investment.');return;}
+  roiHideErr();setRoiRun(true);
+  setH('hsts','running ROI…','run');
+  document.getElementById('roi-empty').style.display='none';
+  document.getElementById('roi-results').style.display='none';
+  roiProg('Running ROI analysis…',8,'Running paired simulations across the period…');
+  let fk=8;const tmr=setInterval(()=>{fk=Math.min(fk+2,90);roiProg('Running ROI analysis…',fk,fk<40?'Simulating operating period…':fk<70?'Computing cash flows…':'Sensitivity analysis…');},400);
+  const req={
+    params:{grid_kw:params.grid,farm_pv_kw:params.pv,panel_w:params.panel,tractors:params.tr,chargers:params.ch,charger_kw:params.cpwr,battery_kwh:params.bat,num_tasks:params.tasks,seed:params.seed},
+    start:document.getElementById('roi-start').value,
+    end:document.getElementById('roi-end').value,
+    period_mode:document.getElementById('roi-mode').value,
+    representative_days_per_month:parseInt(document.getElementById('roi-repdays').value)||1,
+    scenario:document.getElementById('roi-scenario').value,
+    horizon:parseInt(document.getElementById('roi-horizon').value)||10,
+    discount_rate:parseFloat(document.getElementById('roi-discount').value)||0,
+    currency:document.getElementById('roi-currency').value||'EUR',
+    investments:inv,
+    assumptions:collectRoiAssumptions(),
+  };
+  try{
+    const resp=await fetch(SRV+'/api/roi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(req)});
+    clearInterval(tmr);roiProg('Rendering…',96,'');
+    const json=await resp.json();
+    if(!resp.ok)throw new Error(json.error||('Server error '+resp.status));
+    roiHideProg();lastRoi=json;renderRoi(json);
+    setH('hsts','ROI done','ok');
+  }catch(e){
+    clearInterval(tmr);roiHideProg();
+    roiShowErr('ROI analysis failed.\n\n'+e.message);
+    setH('hsts','error','err');
+  }finally{setRoiRun(false);}
+}
+
+/* ── Formatting helpers ── */
+let ROI_CUR='EUR';
+function cur(v,dec=0){if(v===null||v===undefined||Number.isNaN(v))return '<span class="na">N/A</span>';return ROI_CUR+' '+Number(v).toLocaleString(undefined,{maximumFractionDigits:dec});}
+function pct(v,dec=1){if(v===null||v===undefined||Number.isNaN(v))return '<span class="na">N/A</span>';return Number(v).toFixed(dec)+'%';}
+function yrs(v){if(v===null||v===undefined||Number.isNaN(v))return '<span class="na">N/A</span>';return Number(v).toFixed(1)+' yr';}
+function num(v,dec=0){if(v===null||v===undefined||Number.isNaN(v))return '<span class="na">N/A</span>';return Number(v).toLocaleString(undefined,{maximumFractionDigits:dec});}
+
+let RCI={};
+function destroyRoiCharts(){Object.values(RCI).forEach(c=>{try{c.destroy();}catch(e){}});RCI={};}
+
+function renderRoi(d){
+  destroyRoiCharts();
+  ROI_CUR=d.meta.currency||'EUR';
+  const el=document.getElementById('roi-results');
+  el.innerHTML='';el.style.display='flex';
+  const m=d.meta;
+
+  // Header + meta chips + export
+  el.insertAdjacentHTML('beforeend',`
+    <div class="shdr"><span class="stitle">ROI &amp; Investment</span>
+      <span class="ssub">${m.start_date} → ${m.end_date}</span>
+      <div class="exp-row"><button class="exp-btn" onclick="exportRoiCSV()">⬇ CSV</button><button class="exp-btn" onclick="exportRoiJSON()">⬇ JSON</button></div>
+    </div>
+    <div class="meta-chips">
+      <span class="meta-chip">method: ${m.period_mode}${m.requested_period_mode!==m.period_mode?' (auto)':''}</span>
+      <span class="meta-chip">${m.simulations_run} simulations</span>
+      <span class="meta-chip">${m.days_represented} days represented</span>
+      <span class="meta-chip">horizon ${m.financial_horizon_years} yr</span>
+      <span class="meta-chip">discount ${m.discount_rate_pct}%</span>
+      <span class="meta-chip">seed ${m.seed}</span>
+      <span class="meta-chip">${m.seasonal_pv_model}</span>
+    </div>`);
+
+  // Warnings
+  if(d.warnings && d.warnings.length){
+    const items=d.warnings.map(w=>{
+      const cls=/islanding|disconnect/i.test(w)?'roi-warn red':(/not necessarily additive|sequential/i.test(w)?'roi-warn info':'roi-warn');
+      return `<div class="${cls}">${w}</div>`;
+    }).join('');
+    el.insertAdjacentHTML('beforeend',`<div class="roi-warns">${items}</div>`);
+  }
+
+  // Headline cards — portfolio if present, else first investment
+  const head=d.portfolio&&d.portfolio.metrics?d.portfolio:(d.investments[0]||{metrics:{}});
+  const hm=head.metrics||{};
+  const opSav=hm.annual_operating_savings_eur ?? hm.annual_net_benefit_eur ?? null;
+  const relBen=(d.reliability&&d.meta)?d.reliability.avoided_outage_cost_eur:null;
+  el.insertAdjacentHTML('beforeend',`
+    <div class="shdr"><span class="stitle">Results summary</span><span class="ssub">${head.name||''}</span></div>
+    <div class="roi-cards">
+      <div class="roi-card"><div class="rl">Net investment</div><div class="rv">${cur(hm.net_capex_eur)}</div><div class="rs">CAPEX − grants</div></div>
+      <div class="roi-card"><div class="rl">Annual operating savings</div><div class="rv">${cur(opSav)}</div><div class="rs">year 1, undiscounted</div></div>
+      <div class="roi-card"><div class="rl">Annual reliability benefit</div><div class="rv">${cur(relBen)}</div><div class="rs">avoided outage cost</div></div>
+      <div class="roi-card"><div class="rl">Simple payback</div><div class="rv">${yrs(hm.simple_payback_years)}</div><div class="rs">undiscounted</div></div>
+      <div class="roi-card"><div class="rl">Discounted payback</div><div class="rv">${yrs(hm.discounted_payback_years)}</div><div class="rs">@ ${m.discount_rate_pct}%</div></div>
+      <div class="roi-card"><div class="rl">NPV</div><div class="rv">${cur(hm.npv_eur)}</div><div class="rs">over ${m.financial_horizon_years} yr</div></div>
+      <div class="roi-card"><div class="rl">IRR</div><div class="rv">${pct(hm.irr_pct)}</div><div class="rs">internal rate</div></div>
+      <div class="roi-card"><div class="rl">ROI over horizon</div><div class="rv">${pct(hm.roi_pct)}</div><div class="rs">simple</div></div>
+    </div>`);
+
+  // Comparison table
+  const rows=[...d.investments];
+  const tableRows=rows.map(r=>roiTableRow(r,false)).join('')+(d.portfolio&&d.portfolio.metrics?roiTableRow(d.portfolio,true):'');
+  el.insertAdjacentHTML('beforeend',`
+    <div class="shdr"><span class="stitle">Investment comparison</span></div>
+    <div class="roi-table-wrap"><table class="roi-table">
+      <thead><tr><th>Investment</th><th>Net CAPEX</th><th>Annual benefit</th><th>Maint. Δ</th><th>Reliability</th><th>Payback</th><th>NPV</th><th>IRR</th><th>ROI</th></tr></thead>
+      <tbody>${tableRows}</tbody>
+    </table></div>
+    <div style="font-size:11px;color:var(--text3)">Standalone rows use each investment's own baseline and are not necessarily additive; the portfolio row is the sequential, non-double-counted total.</div>`);
+
+  // Charts (collapsible groups)
+  el.insertAdjacentHTML('beforeend',`
+    <details class="roi-panel" open><summary>Cash-flow charts</summary><div class="roi-panel-body">
+      <div class="chart-row">
+        <div class="ccard"><div class="ctitle">Cumulative cash flow (${ROI_CUR})</div><div style="position:relative;height:220px"><canvas id="rc-cum"></canvas></div></div>
+        <div class="ccard"><div class="ctitle">Discounted cumulative cash flow (${ROI_CUR})</div><div style="position:relative;height:220px"><canvas id="rc-dcum"></canvas></div></div>
+      </div>
+    </div></details>
+    <details class="roi-panel"><summary>Operating cost &amp; breakdown</summary><div class="roi-panel-body">
+      <div class="chart-row">
+        <div class="ccard"><div class="ctitle">Baseline vs candidate annual operating cost (${ROI_CUR})</div><div style="position:relative;height:220px"><canvas id="rc-opcost"></canvas></div></div>
+        <div class="ccard"><div class="ctitle">Annual cost breakdown (${ROI_CUR}, year 1)</div><div style="position:relative;height:220px"><canvas id="rc-break"></canvas></div></div>
+      </div>
+    </div></details>
+    <details class="roi-panel"><summary>Energy &amp; sensitivity</summary><div class="roi-panel-body">
+      <div class="chart-row">
+        <div class="ccard"><div class="ctitle">Annual energy comparison (kWh/yr)</div><div style="position:relative;height:220px"><canvas id="rc-energy"></canvas></div></div>
+        <div class="ccard"><div class="ctitle">Sensitivity — portfolio NPV (${ROI_CUR})</div><div style="position:relative;height:240px"><canvas id="rc-sens"></canvas></div></div>
+      </div>
+    </div></details>`);
+
+  renderRoiCharts(d);
+  renderReliability(d,el);
+}
+
+function roiTableRow(r,isPortfolio){
+  const m=r.metrics||{};
+  const benefit=m.annual_operating_savings_eur ?? m.annual_net_benefit_eur ?? m.annual_avoided_outage_cost_eur ?? null;
+  const maint=m.annual_maintenance_difference_eur ?? null;
+  const rel=m.annual_avoided_outage_cost_eur ?? (isPortfolio?null:null);
+  const warn=(r.warnings&&r.warnings.length)?` <span title="${r.warnings.join(' | ').replace(/"/g,'')}" style="color:var(--amber);cursor:help">⚠${r.warnings.length}</span>`:'';
+  return `<tr class="${isPortfolio?'portfolio-row':''}">
+    <td>${r.name}${warn}</td><td>${cur(m.net_capex_eur)}</td><td>${cur(benefit)}</td>
+    <td>${maint===null?'—':cur(maint)}</td><td>${rel===null?'—':cur(rel)}</td>
+    <td>${yrs(m.simple_payback_years)}</td><td>${cur(m.npv_eur)}</td><td>${pct(m.irr_pct)}</td><td>${pct(m.roi_pct)}</td></tr>`;
+}
+
+function renderRoiCharts(d){
+  const cc=gc();
+  const base={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,labels:{color:cc.tick,font:{size:10},boxWidth:12}}},
+    scales:{x:{ticks:{color:cc.tick,font:{size:10}},grid:{color:cc.grid}},y:{ticks:{color:cc.tick,font:{size:10}},grid:{color:cc.grid}}}};
+  const COL=['#C0312F','#A86209','#3A7A0E','#1558A8','#7B2FBE'];
+  const series=[...d.investments];if(d.portfolio&&d.portfolio.metrics)series.push(d.portfolio);
+
+  // 1+2. Cumulative & discounted cumulative
+  const years=(series[0]&&series[0].annual_cashflows)?series[0].annual_cashflows.map(r=>r.year):[];
+  const mk=(field)=>({labels:years,datasets:series.map((s,i)=>({label:s.name.split(' ')[0]+(s.id==='portfolio'?' (portfolio)':''),
+      data:(s.annual_cashflows||[]).map(r=>+r[field].toFixed(0)),borderColor:COL[i%COL.length],backgroundColor:'transparent',tension:.1,pointRadius:2}))});
+  RCI.cum=new Chart(document.getElementById('rc-cum'),{type:'line',data:mk('cumulative_cash_flow'),options:base});
+  RCI.dcum=new Chart(document.getElementById('rc-dcum'),{type:'line',data:mk('cumulative_discounted_cash_flow'),options:base});
+
+  // 3. Baseline vs candidate operating cost (pick investment with populated baseline)
+  const opInv=series.find(s=>(s.annual_cashflows||[]).some(r=>r.baseline_operating_cost))||series[0];
+  const ocf=(opInv.annual_cashflows||[]).filter(r=>r.year>0);
+  RCI.opcost=new Chart(document.getElementById('rc-opcost'),{type:'bar',data:{labels:ocf.map(r=>r.year),datasets:[
+    {label:'Baseline op cost',data:ocf.map(r=>+r.baseline_operating_cost.toFixed(0)),backgroundColor:'#C0312F'},
+    {label:'Candidate op cost',data:ocf.map(r=>+r.candidate_operating_cost.toFixed(0)),backgroundColor:'#3A7A0E'},
+  ]},options:base});
+
+  // 4. Cost breakdown (year 1 components across investments)
+  const y1=(inv,f)=>{const r=(inv.annual_cashflows||[]).find(x=>x.year===1);return r?Math.abs(r[f]||0):0;};
+  const bd=d.investments;
+  RCI.break=new Chart(document.getElementById('rc-break'),{type:'bar',data:{labels:bd.map(s=>s.name.split(' ')[0]),datasets:[
+    {label:'Electricity',data:bd.map(s=>+y1(s,'electricity_cost').toFixed(0)),backgroundColor:'#1558A8'},
+    {label:'Fuel',data:bd.map(s=>+y1(s,'fuel_cost').toFixed(0)),backgroundColor:'#6B6860'},
+    {label:'Maintenance',data:bd.map(s=>+y1(s,'maintenance').toFixed(0)),backgroundColor:'#A86209'},
+    {label:'Replacements',data:bd.map(s=>+y1(s,'replacement_cost').toFixed(0)),backgroundColor:'#C0312F'},
+    {label:'Outage loss',data:bd.map(s=>+y1(s,'outage_loss').toFixed(0)),backgroundColor:'#7B2FBE'},
+  ]},options:{...base,scales:{x:{...base.scales.x,stacked:true},y:{...base.scales.y,stacked:true}}}});
+
+  // 5. Energy comparison
+  const op=d.operational_summary||{};
+  const elec=d.investments.find(s=>s.id==='electric_fleet');
+  const dieselL=elec?(elec.metrics.annual_diesel_litres||0):0;
+  RCI.energy=new Chart(document.getElementById('rc-energy'),{type:'bar',data:{labels:['Grid','Farm PV gen','Roof PV gen','PV used','Diesel (L→kWh~10.7)'],datasets:[
+    {label:'kWh/yr',data:[op.grid_kwh,op.farm_pv_generated_kwh,op.tractor_pv_generated_kwh,op.pv_used_kwh,dieselL*10.7].map(v=>+(v||0).toFixed(0)),
+      backgroundColor:['#C0312F','#A86209','#3A7A0E','#0D7A58','#6B6860']}]},options:{...base,plugins:{legend:{display:false}}}});
+
+  // 6. Sensitivity tornado (portfolio NPV low/high)
+  if(d.sensitivity&&d.sensitivity.parameters){
+    const sp=d.sensitivity.parameters;const baseNpv=(d.sensitivity.base&&d.sensitivity.base.npv_eur)||0;
+    RCI.sens=new Chart(document.getElementById('rc-sens'),{type:'bar',data:{labels:sp.map(p=>p.parameter),datasets:[
+      {label:'−'+d.sensitivity.variation_pct+'%',data:sp.map(p=>+(((p.low&&p.low.npv_eur)||baseNpv)-baseNpv).toFixed(0)),backgroundColor:'#C0312F'},
+      {label:'+'+d.sensitivity.variation_pct+'%',data:sp.map(p=>+(((p.high&&p.high.npv_eur)||baseNpv)-baseNpv).toFixed(0)),backgroundColor:'#3A7A0E'},
+    ]},options:{...base,indexAxis:'y',scales:{x:{...base.scales.x,title:{display:true,text:'Δ NPV vs base',color:cc.tick}},y:base.scales.y}}});
+  }
+}
+
+function renderReliability(d,el){
+  const r=d.reliability;if(!r)return;
+  const src=r.sources||{};
+  el.insertAdjacentHTML('beforeend',`
+    <details class="roi-panel"><summary>Reliability &amp; outage results</summary><div class="roi-panel-body">
+      <div class="roi-cards" style="grid-template-columns:repeat(4,1fr)">
+        <div class="roi-card"><div class="rl">Expected outages/yr</div><div class="rv">${num(d.assumptions.outages.frequency_per_year,1)}</div></div>
+        <div class="roi-card"><div class="rl">Expected outage hours</div><div class="rv">${num(r.expected_outage_hours_per_year,1)}</div></div>
+        <div class="roi-card"><div class="rl">Critical-load coverage</div><div class="rv">${pct(r.critical_load_coverage_pct)}</div></div>
+        <div class="roi-card"><div class="rl">Unserved energy</div><div class="rv">${num(r.expected_unserved_energy_kwh,1)} kWh</div></div>
+        <div class="roi-card"><div class="rl">Autonomous hours</div><div class="rv">${num(r.autonomous_hours,1)} h</div></div>
+        <div class="roi-card"><div class="rl">Expected outage cost</div><div class="rv">${cur(r.expected_annual_outage_cost_eur)}</div></div>
+        <div class="roi-card"><div class="rl">Avoided outage cost</div><div class="rv">${cur(r.avoided_outage_cost_eur)}</div></div>
+        <div class="roi-card"><div class="rl">Islanding</div><div class="rv" style="font-size:14px">${r.islanding_enabled?'enabled':'disabled'}</div></div>
+      </div>
+      <div style="margin-top:10px;font-size:11px;color:var(--text3)">
+        Sources — critical load &amp; PV: <strong>${src.pv_availability||'simulated'}</strong>;
+        stationary battery: <strong>${src.stationary_battery||'analytical'}</strong>; V2L: <strong>${src.v2l||'analytical'}</strong>.
+      </div>
+      ${!r.islanding_enabled?'<div class="roi-warn red" style="margin-top:8px">Grid-connected PV is assumed to disconnect during an outage and therefore provides no backup-power benefit.</div>':''}
+    </div></details>`);
+}
+
+/* ── Export ── */
+function _download(name,text,mime){
+  const blob=new Blob([text],{type:mime});const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=name;a.click();URL.revokeObjectURL(url);
+}
+function exportRoiJSON(){if(!lastRoi)return;_download('roi_report.json',JSON.stringify(lastRoi,null,2),'application/json');}
+function exportRoiCSV(){
+  if(!lastRoi)return;
+  const rows=[...lastRoi.investments];if(lastRoi.portfolio&&lastRoi.portfolio.metrics)rows.push(lastRoi.portfolio);
+  const cols=['id','name','net_capex_eur','npv_eur','irr_pct','simple_payback_years','discounted_payback_years','roi_pct'];
+  let csv=cols.join(',')+'\n';
+  rows.forEach(r=>{const m=r.metrics||{};csv+=[r.id,'"'+r.name+'"',m.net_capex_eur,m.npv_eur,m.irr_pct,m.simple_payback_years,m.discounted_payback_years,m.roi_pct].map(v=>v==null?'':v).join(',')+'\n';});
+  _download('roi_summary.csv',csv,'text/csv');
 }
 </script>
 </body>

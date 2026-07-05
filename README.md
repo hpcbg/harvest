@@ -45,12 +45,29 @@ harvest/
 │   ├── sim_backend.py        #   SimulationFleetInterface + Adapters hook for pilot6
 │   ├── demo_autonomous_control.py  # Runnable TPI2 demo — writes execution_log.csv
 │   └── ros2_bridge.py        #   Skeleton ROS 2 node (Stage 3, guarded imports)
-└── farmview/                 # Visualisation package
-    ├── __init__.py
-    ├── _colors.py
-    ├── _renderer.py          #   render_farm() — top-down farm map
-    ├── _marl.py              #   render_marl_log() — MARL agent dashboard
-    └── __main__.py           #   python -m farmview CLI
+├── farmview/                 # Visualisation package
+│   ├── __init__.py
+│   ├── _colors.py
+│   ├── _renderer.py          #   render_farm() — top-down farm map
+│   ├── _marl.py              #   render_marl_log() — MARL agent dashboard
+│   └── __main__.py           #   python -m farmview CLI
+├── roi/                      # ROI & Investment analysis (long-term economics)
+│   ├── __init__.py           #   run_roi_analysis() public API
+│   ├── models.py             #   Typed assumptions / totals / cash-flow / result structures
+│   ├── calculator.py         #   NPV, IRR, simple & discounted payback, ROI, escalation
+│   ├── period_runner.py      #   Aggregates the simulator over exact/representative periods
+│   ├── investments.py        #   Electric-vs-diesel, farm PV, roof PV, chargers, portfolio
+│   ├── reliability.py        #   Outage expected-value model + avoided outage cost
+│   ├── engine.py             #   Orchestrator: variants → investments → sensitivity
+│   ├── validation.py         #   Central input validation + advisory warnings
+│   ├── export.py             #   roi_summary.csv / roi_cashflows.csv / *.json writers
+│   └── __main__.py           #   python -m roi CLI
+└── tests/                    # Unit + integration tests (stdlib unittest)
+    ├── test_calculator.py    #   NPV / IRR / payback / ROI primitives
+    ├── test_investments.py   #   Diesel litres, PV paired-sim, degradation, double-count
+    ├── test_reliability.py   #   Islanding rule, expected-value outage cost
+    ├── test_period_runner.py #   Period resolution, seasonality, determinism
+    └── test_integration.py   #   Existing sim preserved + ROI engine end-to-end
 ```
 
 ---
@@ -91,8 +108,18 @@ python server.py
 
 Then open **http://localhost:8765** in Firefox, Chrome, or Edge.
 The browser opens automatically. The dashboard is fully self-contained — Chart.js is bundled inline, no internet connection required.
+Use the header tabs to switch between the **Operations** view and the **ROI & Investment** view.
 
 [![Dashboard overview](./images/dashboard-overview.png)](./images/dashboard-overview.png)
+
+### Option C — ROI & Investment analysis (CLI)
+
+```bash
+python -m roi --config config.yaml --start 2026-01-01 --end 2026-12-31 --period-mode auto --horizon 10
+```
+
+Writes `outputs/roi/roi_summary.csv`, `roi_cashflows.csv`, `roi_assumptions.json` and
+`roi_report.json`. See **ROI & Investment Analysis** below for the full model.
 
 ---
 
@@ -500,6 +527,225 @@ PENDING → DELAYED   (window expired, extended deadline, re-queued)
 
 ---
 
+## ROI & Investment Analysis
+
+The `roi/` package adds a dedicated **long-term return-on-investment** layer on top
+of the one-day operational simulator. Where the Operations view compares operational
+scenarios for a single simulated day, the **ROI & Investment** view answers a
+different question: *over a 5–20 year horizon, do the main HARVEST investments pay
+back?* It is available as a dashboard tab, an HTTP endpoint (`POST /api/roi`) and a
+headless CLI (`python -m roi`).
+
+> **All ROI outputs are estimates based on user-supplied assumptions.** The default
+> figures shipped in `config.yaml` are **zero/disabled** on purpose — they are inputs
+> the operator must provide. A fully worked *demonstration* set lives in
+> `config.local.yaml.example` and is **not a commercial quotation**.
+
+### Operational period vs financial horizon
+
+Two independent time concepts, kept deliberately separate in the UI:
+
+| Concept | Meaning | Example |
+|---|---|---|
+| **Operational data period** | The calendar range actually simulated to measure annual energy, fuel, distance and hours | 2026-01-01 → 2026-12-31 |
+| **Financial investment horizon** | The number of years the cash-flow model projects (payback, NPV, IRR) | 10 years |
+
+The operational period is simulated once and **annualised to a 365-day year**; the
+annual totals then drive every year of the financial horizon (with escalation,
+degradation and scheduled replacements applied per year).
+
+### Period calculation modes
+
+| Mode | Behaviour |
+|---|---|
+| `exact` | One deterministic simulation per calendar day in the range |
+| `representative_month` | N representative days per covered month (default 1), weighted by calendar days — captures seasonal PV variation without simulating all 365 days |
+| `auto` | `exact` for periods ≤ `auto_exact_max_days` (default 90), otherwise `representative_month` |
+
+A deterministic seed rule keeps runs reproducible: **`daily_seed = base_seed + YYYYMMDD`**.
+
+Because the default `static` PV backend has no seasonal variation, the period runner
+applies a documented **monthly seasonal factor** (peak in June ≈ 1.0, trough in
+December ≈ 0.25) to PV *generation* only when that backend is active — so a one-year
+analysis reflects real seasonal PV differences instead of repeating the June day
+unchanged. Installed capacity (and therefore CAPEX) is unaffected. When a genuinely
+seasonal predictor (`stub` / `openmeteo` / `nn`) is active the factor is 1.0 to avoid
+double-counting. The result metadata reports which method, how many simulations ran,
+how many calendar days are represented, and the seasonal model used.
+
+### Supported investments
+
+| Investment | Baseline it is compared against |
+|---|---|
+| **Electric fleet vs diesel** | Same workload performed by an equivalent diesel fleet (matched-service) |
+| **Fixed farm PV** | An identical simulation with `farm_fixed_peak_kw = 0` |
+| **Tractor-roof PV** | An identical simulation with roof `panel_peak_w = 0` |
+| **Charging infrastructure** | Included in the electric-fleet principal (CAPEX shown separately) |
+| **Backup / islanding** | Grid-tied system with no backup (reliability benefit only) |
+| **Combined HARVEST portfolio** | Sequential incremental stages — see below |
+
+Each PV investment uses **paired simulations**: two otherwise-identical runs that
+differ only in the asset under study, so savings come from the real simulator
+behaviour, priced at **time-step tariffs** (never a single blended average price).
+
+### Electric-vs-diesel calculation
+
+A diesel counterfactual performs exactly the electric fleet's workload:
+
+```
+travel_litres = travel_distance_km × litres_per_100km / 100
+work_litres   = PTO_work_hours     × pto_litres_per_hour
+idle_litres   = idle_hours         × idle_litres_per_hour
+diesel_fuel_cost = (travel + work + idle) litres × diesel_price_per_litre
+```
+
+The electric alternative uses the **actual charging electricity cost from the
+simulation** (charger input energy priced at time-step tariffs — not estimated from
+total farm energy), plus charger CAPEX/install, electric maintenance and an optional
+battery replacement. The comparison is **matched-service** (same generated task set,
+compared on cost per completed task); a warning is raised if service levels differ.
+
+### Farm PV & roof PV calculation
+
+```
+avoided_grid_cost = baseline_grid_cost − candidate_grid_cost   (paired sims, time-step priced)
+```
+
+Farm PV and roof PV are evaluated **independently** with separate ROI results.
+Exported energy has zero value unless `export_enabled` is set (then it uses the
+configured feed-in tariff — never net metering unless explicitly configured); PV
+yield **degrades** each year while the value of each kWh **escalates** with the
+electricity price. Farm PV and roof PV savings are never counted twice.
+
+### Outage & reliability assumptions
+
+Reliability is an **expected-value** model over the simulated 15-minute power
+profile. For each step it compares critical demand against available backup supply:
+
+```
+expected_outage_hours_per_year = frequency_per_year × average_duration_hours
+expected_unserved_energy       = Σ unsupported critical load over expected outages
+expected_outage_cost           = unserved_energy × value_of_lost_load
+                               + unsupported_hours × downtime_cost
+                               + expected task-disruption cost
+reliability_benefit            = baseline_outage_cost − candidate_outage_cost
+```
+
+> **Physical rule:** Grid-connected PV is assumed to disconnect during an outage and
+> therefore provides **no** backup-power benefit unless an islanding-capable inverter
+> is enabled. The simulator does **not** model a stationary backup battery, so its
+> contribution is clearly labelled an **analytical** backup model (PV availability and
+> critical load come from the simulated profile; the fixed battery and V2L headroom
+> are analytical). Sources are never mixed silently.
+
+### Combined portfolio — no double-counting
+
+The portfolio uses a **sequential incremental** comparison so overlapping savings are
+counted once:
+
+1. Diesel fleet baseline
+2. **+** Electric tractors & charging infrastructure (marginal vs diesel)
+3. **+** Fixed farm PV (marginal vs stage 2)
+4. **+** Tractor-roof PV (marginal vs stage 3)
+5. **+** Islanding / backup (reliability benefit)
+
+Each stage counts only its marginal benefit over the previous stage. The combined
+portfolio benefit therefore does **not** equal the sum of the independently-calculated
+standalone savings, and a warning states so explicitly.
+
+### Financial formulas
+
+`net_capex = equipment + installation + other − grants − subsidies`;
+`annual_net_benefit = avoided_operating_cost + revenue + reliability_benefit −
+maintenance − recurring_costs`. Year 0 holds the CAPEX. **NPV** discounts every year
+plus residual value; **IRR** is found by numerically-safe bisection (returns *not
+available* when cash flows don't admit a valid IRR); **simple** and **discounted
+payback** interpolate the fractional year the cumulative cash flow turns non-negative;
+**ROI** is `(cumulative_undiscounted_net_benefit − net_capex) / net_capex × 100`
+(*N/A* when CAPEX ≤ 0). A cash-flow row is returned for every year with baseline /
+candidate operating cost, fuel, electricity, maintenance, outage loss, revenue,
+replacement, net, discount factor, discounted and cumulative values.
+
+### ROI metrics
+
+| Metric | Meaning |
+|---|---|
+| **Net CAPEX** | Equipment + installation − grants/subsidies |
+| **Annual net benefit** | Operating savings + revenue + reliability − recurring costs (year 1) |
+| **Simple ROI** | `(cumulative net benefit − CAPEX) / CAPEX × 100` over the horizon |
+| **Simple payback** | First fractional year cumulative undiscounted cash flow ≥ 0 |
+| **Discounted payback** | First fractional year cumulative discounted cash flow ≥ 0 |
+| **NPV** | Discounted net present value incl. residual value |
+| **IRR** | Internal rate of return (bisection; *N/A* if undefined) |
+| **Expected outage cost** | Annual expected cost of unserved critical load + downtime |
+| **Avoided outage cost** | Reliability benefit = baseline − candidate outage cost |
+
+### Sensitivity analysis
+
+A one-way sensitivity varies diesel price, electricity-price escalation, farm-PV CAPEX,
+electric-tractor CAPEX, discount rate, outage frequency and value-of-lost-load by
+±`variation_pct` (default 20%), recomputing portfolio NPV / payback / ROI for each.
+It **reuses the operational energy totals** (no simulation re-runs) and is shown as a
+tornado-style bar chart.
+
+### Dashboard usage
+
+Open the dashboard and use the header tabs to switch between **Operations** and
+**ROI & Investment**. In the ROI view: set the analysis period, period method and
+financial horizon; tick the investments to analyse; expand the collapsible assumption
+panels (each field shows its unit); then **RUN ROI ANALYSIS**. Results show summary
+cards, an investment comparison table, cash-flow / cost-breakdown / energy /
+sensitivity charts, a reliability panel, and always-visible warnings (distances
+measured vs derived, period exact vs representative, outage simulated vs analytical,
+service-level differences, missing inputs, standalone-overlap). Zero/default inputs
+are marked **Input required** and invalid metrics show **N/A** with the reason.
+Results can be exported as CSV and JSON from the results header.
+
+### CLI usage
+
+```bash
+python -m roi \
+    --config config.yaml \
+    --start 2026-01-01 \
+    --end 2026-12-31 \
+    --period-mode auto \
+    --horizon 10
+```
+
+Generated files (default `outputs/roi/`):
+
+- `roi_summary.csv` — one row per investment plus the combined portfolio
+- `roi_cashflows.csv` — one row per investment per year
+- `roi_assumptions.json` — the resolved assumptions actually used
+- `roi_report.json` — the full response (meta, operational, investments, portfolio, sensitivity)
+
+### Configuration
+
+The `roi:` section of `config.yaml` documents every assumption
+(`analysis`, `financial`, `service_value`, `electric_fleet`, `diesel`, `farm_pv`,
+`tractor_roof_pv`, `outages`, `sensitivity`). Economic assumptions are **never**
+hard-coded in Python — they come from config, and `config.local.yaml` can override any
+of them without a git commit. See `config.local.yaml.example` for a labelled demo set.
+
+### Warnings & limitations
+
+- ROI outputs are **estimates** based on user-supplied assumptions; default
+  demonstration prices are **not** commercial quotations.
+- Grid-tied PV provides **no** outage backup unless islanding is enabled.
+- Standalone investment results **cannot always be added together** — use the portfolio.
+- The stationary backup battery is an **analytical** model (not simulated); its results
+  are labelled as such and never mixed with simulated values.
+- Work (in-field) distances are **derived** from execution time × configured working
+  speed; the dashboard states when distances are derived rather than measured.
+
+### Future work — energy sharing (out of scope)
+
+Energy exchange with neighbouring farms or households — peer-to-peer trading, energy
+communities, export coordination — is **explicitly out of scope** for this module and
+is noted here only as possible future work. Nothing in `roi/` implements it.
+
+---
+
 ## Configuration
 
 All parameters are in `config.yaml`. Key sections:
@@ -523,10 +769,16 @@ task_generation:
   mode: "generated"          # static | generated
   num_tasks: 20              # scale with fleet: ~6-7 tasks per tractor per day
   seed: 42
+  work_speed_kmh: 4.0        # in-field working speed → derives task work-distance for ROI
 
 prediction:
   pv:
     backend: static          # static | stub | openmeteo | nn
+
+roi:                         # long-term ROI & investment economics — see the
+  enabled: true              # "ROI & Investment Analysis" section above.
+  # analysis / financial / diesel / electric_fleet / farm_pv / tractor_roof_pv /
+  # outages / sensitivity …  (all economic values default to zero = "Input required")
 ```
 
 ---

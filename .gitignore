@@ -54,6 +54,7 @@ perception/vision/datasets/
 runs/
 models/
 *.npz
+.claude
 
 # HARVEST — local overrides (machine-specific, never committed)
 config.local.yaml

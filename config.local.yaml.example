@@ -29,3 +29,69 @@ prediction:
 #     backend: openmeteo
 #     latitude: 41.69
 #     longitude: 23.31
+
+# ── ROI & Investment — DEMONSTRATION assumptions ───────────────────────────────
+# The values below are ILLUSTRATIVE placeholders to make the ROI dashboard show
+# non-trivial numbers out of the box.  They are NOT commercial quotations or
+# market facts — replace every figure with your own verified pilot data before
+# quoting any result.  Uncomment the block to activate.
+#
+# roi:
+#   analysis:
+#     financial_horizon_years: 10
+#   financial:
+#     discount_rate_pct: 6.0
+#     electricity_price_escalation_pct: 3.0
+#     diesel_price_escalation_pct: 3.5
+#   diesel:
+#     fuel_price_eur_per_litre: 1.55       # demo pump price
+#     travel_litres_per_100km: 22.0        # demo compact-tractor transit consumption
+#     pto_litres_per_hour: 8.0             # demo PTO/working consumption
+#     idle_litres_per_hour: 1.8
+#     maintenance_eur_per_hour: 3.5
+#     co2_kg_per_litre: 2.64               # standard diesel emission factor
+#   electric_fleet:
+#     electric_tractor_purchase_eur: 95000.0
+#     diesel_equivalent_purchase_eur: 62000.0
+#     electric_maintenance_eur_per_hour: 1.5
+#     charger_capex_eur_each: 4200.0
+#     charger_installation_eur_each: 1600.0
+#     grant_eur: 15000.0
+#     residual_value_eur: 12000.0
+#     battery_replacement_year: 8
+#     battery_replacement_eur: 14000.0
+#   farm_pv:
+#     capex_eur_per_kwp: 950.0
+#     fixed_installation_eur: 2500.0
+#     annual_om_pct_of_capex: 1.5
+#     annual_degradation_pct: 0.5
+#     feed_in_tariff_eur_per_kwh: 0.06
+#     export_enabled: false
+#     grant_eur: 1500.0
+#     inverter_replacement_year: 12
+#     inverter_replacement_eur: 1800.0
+#     residual_value_eur: 800.0
+#   tractor_roof_pv:
+#     capex_eur_per_tractor: 1300.0
+#     installation_eur_per_tractor: 350.0
+#     annual_om_eur_per_tractor: 40.0
+#     annual_degradation_pct: 0.7
+#     grant_eur: 0.0
+#   outages:
+#     enabled: true
+#     frequency_per_year: 8.0
+#     average_duration_hours: 3.0
+#     value_of_lost_load_eur_per_kwh: 6.0
+#     downtime_cost_eur_per_hour: 40.0
+#     task_disruption_cost_eur_per_hour: 25.0
+#     islanding_enabled: true
+#     critical_load_kw: 0.5
+#     backup_battery_kwh: 20.0
+#     backup_max_power_kw: 5.0
+#     v2l_enabled: true
+#     v2l_min_tractor_soc_pct: 30.0
+#     islanding_capex_eur: 3500.0
+#     backup_capex_eur: 9000.0
+#   sensitivity:
+#     enabled: true
+#     variation_pct: 20.0

@@ -220,6 +220,7 @@ task_generation:
   mode: generated
   num_tasks: 20
   seed: 42
+  work_speed_kmh: 4.0   # in-field working speed → derives task work-distance for ROI
 marl:
   enabled: true
   algorithm: rule_based
@@ -325,3 +326,103 @@ dynamic_events:
 - at: '2026-06-01 18:00:00'
   type: grid_restore
   label: 'Grid cap restored'
+
+# ── ROI & Investment analysis ──────────────────────────────────────────────────
+# Long-term return-on-investment model for the main HARVEST investments.
+# IMPORTANT: economic values below are ZERO/DISABLED by default on purpose — they
+# are inputs the operator must supply.  The dashboard marks zero/default values as
+# "Input required" rather than presenting an unsupported but precise-looking ROI.
+# A fully worked *demonstration* set (clearly labelled, NOT market quotations) is
+# provided in config.local.yaml.example.
+roi:
+  enabled: true
+
+  analysis:
+    period_mode: auto                 # exact | representative_month | auto
+    auto_exact_max_days: 90           # auto uses exact daily up to this many days
+    representative_days_per_month: 1  # days simulated per covered month (rep. mode)
+    default_start_date: "2026-01-01"
+    default_end_date: "2026-12-31"
+    financial_horizon_years: 10
+    currency: EUR
+    scenario: full_smart              # operating strategy simulated for ROI runs
+    base_seed: 42                     # daily_seed = base_seed + YYYYMMDD
+
+  financial:
+    discount_rate_pct: 6.0
+    general_cost_escalation_pct: 2.0
+    electricity_price_escalation_pct: 2.5
+    diesel_price_escalation_pct: 2.5
+    maintenance_escalation_pct: 2.0
+
+  service_value:
+    uncompleted_task_cost_eur: 0.0
+    downtime_cost_eur_per_hour: 0.0
+
+  electric_fleet:
+    electric_tractor_purchase_eur: 0.0
+    diesel_equivalent_purchase_eur: 0.0
+    electric_maintenance_eur_per_hour: 0.0
+    charger_capex_eur_each: 0.0
+    charger_installation_eur_each: 0.0
+    grant_eur: 0.0
+    residual_value_eur: 0.0
+    battery_replacement_year: null
+    battery_replacement_eur: 0.0
+
+  diesel:
+    fuel_price_eur_per_litre: 0.0
+    travel_litres_per_100km: 0.0
+    pto_litres_per_hour: 0.0
+    idle_litres_per_hour: 0.0
+    maintenance_eur_per_hour: 0.0
+    co2_kg_per_litre: 0.0
+
+  farm_pv:
+    capex_eur_per_kwp: 0.0
+    fixed_installation_eur: 0.0
+    annual_om_pct_of_capex: 0.0
+    annual_om_eur: 0.0
+    annual_degradation_pct: 0.5
+    feed_in_tariff_eur_per_kwh: 0.0
+    export_enabled: false
+    grant_eur: 0.0
+    inverter_replacement_year: null
+    inverter_replacement_eur: 0.0
+    residual_value_eur: 0.0
+    lifetime_years: 25
+
+  tractor_roof_pv:
+    capex_eur_per_tractor: 0.0
+    installation_eur_per_tractor: 0.0
+    annual_om_eur_per_tractor: 0.0
+    annual_degradation_pct: 0.5
+    replacement_year: null
+    replacement_eur_per_tractor: 0.0
+    grant_eur: 0.0
+    equipped_tractors: null           # null → count tractors with has_pv_roof
+    residual_value_eur: 0.0
+
+  outages:
+    enabled: false
+    frequency_per_year: 0.0
+    average_duration_hours: 0.0
+    value_of_lost_load_eur_per_kwh: 0.0
+    downtime_cost_eur_per_hour: 0.0
+    task_disruption_cost_eur_per_hour: 0.0
+    islanding_enabled: false
+    critical_load_kw: 0.0
+    backup_battery_kwh: 0.0
+    backup_battery_usable_pct: 80.0
+    backup_reserve_soc_pct: 10.0
+    backup_max_power_kw: 0.0
+    v2l_enabled: false
+    v2l_min_tractor_soc_pct: 30.0
+    islanding_capex_eur: 0.0
+    backup_capex_eur: 0.0
+    grant_eur: 0.0
+    seed: 42
+
+  sensitivity:
+    enabled: true
+    variation_pct: 20.0

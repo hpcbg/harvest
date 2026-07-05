@@ -31,6 +31,16 @@ except ImportError as exc:
         "task_generator.py, and config.yaml."
     )
 
+# ROI engine is optional — the dashboard Operations view works without it.
+try:
+    from roi import run_roi_analysis, ROIValidationError
+    _ROI_AVAILABLE = True
+except ImportError:
+    _ROI_AVAILABLE = False
+
+    class ROIValidationError(Exception):
+        pass
+
 BASE_DIR   = Path(__file__).parent
 CONFIG_FILE = BASE_DIR / "config.yaml"
 DASHBOARD   = BASE_DIR / "dashboard.html"
@@ -222,13 +232,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
 
-        if path != "/simulate":
+        if path == "/simulate":
+            self._handle_simulate()
+        elif path in ("/api/roi", "/roi"):
+            self._handle_roi()
+        else:
             self._send_json({"error": "unknown endpoint"}, 404)
-            return
 
+    def _read_payload(self):
+        length  = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(length))
+
+    def _handle_simulate(self):
         try:
-            length  = int(self.headers.get("Content-Length", 0))
-            payload = json.loads(self.rfile.read(length))
+            payload = self._read_payload()
         except Exception as e:
             self._send_json({"error": f"bad request: {e}"}, 400)
             return
@@ -248,6 +265,35 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             import traceback
             self._send_json({"error": str(e), "trace": traceback.format_exc()}, 500)
+
+    def _handle_roi(self):
+        """POST /api/roi — long-term ROI & investment analysis."""
+        if not _ROI_AVAILABLE:
+            self._send_json({"error": "ROI module not available on the server."}, 500)
+            return
+        try:
+            payload = self._read_payload()
+        except Exception as e:
+            self._send_json({"error": f"bad request: {e}"}, 400)
+            return
+
+        params = payload.get("params", {})
+        try:
+            base_cfg = load_yaml_with_local(CONFIG_FILE)
+            # Dashboard simulation overrides (grid/fleet/PV sliders) apply first, so
+            # the ROI runs reflect the same plant the Operations view simulated.
+            cfg = build_config_override(base_cfg, params) if params else base_cfg
+            report = run_roi_analysis(cfg, payload)
+            self._send_json(report)
+        except ROIValidationError as e:
+            # Expected, user-correctable input errors → HTTP 400, no traceback.
+            self._send_json({"error": str(e)}, 400)
+        except Exception as e:
+            # Unexpected server error — log full trace server-side, send a clean
+            # message to the browser (no Python traceback leaked).
+            import traceback
+            print("ROI error:\n" + traceback.format_exc(), file=sys.stderr)
+            self._send_json({"error": f"ROI analysis failed: {e}"}, 500)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
