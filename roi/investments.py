@@ -36,6 +36,31 @@ class _Built:
     result: InvestmentResult
     net_capex: float
     year_nets: List[float]          # net cash flow for years 1..horizon
+    complete: bool = True           # False → excluded from the portfolio
+
+
+def _incomplete(inv_id: str, name: str, net_capex: float,
+                missing: List[str], extra: Dict[str, Any] = None) -> "_Built":
+    """Result for an investment whose required inputs are missing.
+
+    Financial metrics are left as ``None`` ("Input required") — no zero-year
+    payback, no NPV — and the investment is excluded from the portfolio.
+    """
+    metrics: Dict[str, Any] = {
+        "status": "input_required",
+        "missing": missing,
+        "net_capex_eur": round(net_capex, 2) if net_capex else None,
+        "npv_eur": None,
+        "irr_pct": None,
+        "simple_payback_years": None,
+        "discounted_payback_years": None,
+        "roi_pct": None,
+    }
+    if extra:
+        metrics.update({k: v for k, v in extra.items()})
+    result = InvestmentResult(id=inv_id, name=name, metrics=metrics,
+                              annual_cashflows=[], warnings=list(missing))
+    return _Built(result=result, net_capex=net_capex, year_nets=[], complete=False)
 
 
 def _farm_grid_cost(t: OperationalTotals) -> float:
@@ -152,6 +177,24 @@ def electric_vs_diesel(
     incremental_capex = electric_capex - diesel_capex
     net_capex = incremental_capex - ef.grant_eur
 
+    # Required-input check → "Input required" rather than a misleading zero result.
+    missing: List[str] = []
+    if a.diesel.fuel_price_eur_per_litre <= 0:
+        missing.append("Diesel fuel price is required for the electric-fleet investment.")
+    if a.diesel.travel_litres_per_100km <= 0 and a.diesel.pto_litres_per_hour <= 0:
+        missing.append("Diesel fuel consumption (travel and/or PTO) is required.")
+    if ef.electric_tractor_purchase_eur <= 0:
+        missing.append("E-tractor price (€/tractor) is required for the electric-fleet investment.")
+    if ef.diesel_equivalent_purchase_eur <= 0:
+        missing.append("Diesel tractor price (€/tractor) is required for the electric-fleet investment.")
+    if ef.charger_capex_eur_each <= 0:
+        missing.append("Charger CAPEX (€/charger) is required for the electric-fleet investment.")
+    if missing:
+        return _incomplete("electric_fleet",
+                           "Electric tractors and charging infrastructure",
+                           net_capex, missing,
+                           {"incremental_capex_eur": round(incremental_capex, 2)})
+
     warnings: List[str] = []
     if electric_totals.tasks_missed > 0.5:
         warnings.append(
@@ -239,11 +282,12 @@ def farm_pv(
     net_capex = equipment_capex - p.grant_eur
     annual_om = p.annual_om_eur + p.annual_om_pct_of_capex / 100.0 * equipment_capex
 
-    warnings: List[str] = []
-    if farm_pv_kwp <= 0:
-        warnings.append("Farm PV comparison requires non-zero PV capacity.")
     if p.capex_eur_per_kwp <= 0:
-        warnings.append("Farm PV CAPEX/kWp is zero — payback/NPV are unset (input required).")
+        return _incomplete(inv_id, name, net_capex,
+                           ["Farm PV CAPEX per kWp is required."],
+                           {"installed_kwp": farm_pv_kwp})
+
+    warnings: List[str] = []
 
     year_rows: List[CashflowRow] = []
     for y in range(1, horizon + 1):
@@ -313,11 +357,12 @@ def roof_pv(
     net_capex = equipment_capex - p.grant_eur
     annual_om = p.annual_om_eur_per_tractor * n_equipped
 
-    warnings: List[str] = []
-    if roof_panel_w <= 0:
-        warnings.append("Roof PV comparison requires non-zero panel power.")
     if p.capex_eur_per_tractor <= 0:
-        warnings.append("Roof PV CAPEX/tractor is zero — payback/NPV are unset (input required).")
+        return _incomplete(inv_id, name, net_capex,
+                           ["Roof PV CAPEX per tractor is required."],
+                           {"equipped_tractors": n_equipped})
+
+    warnings: List[str] = []
 
     year_rows: List[CashflowRow] = []
     for y in range(1, horizon + 1):
@@ -371,6 +416,11 @@ def backup_islanding(
     annual_benefit = float(reliability.get("avoided_outage_cost_eur", 0.0) or 0.0)
     net_capex = o.islanding_capex_eur + o.backup_capex_eur - o.grant_eur
 
+    if (o.islanding_capex_eur + o.backup_capex_eur) <= 0:
+        return _incomplete(inv_id, name, net_capex,
+                           ["Islanding and/or backup CAPEX is required for the backup investment."],
+                           {"annual_avoided_outage_cost_eur": round(annual_benefit, 2)})
+
     warnings: List[str] = list(reliability.get("warnings", []))
 
     year_rows: List[CashflowRow] = []
@@ -410,11 +460,16 @@ def portfolio(
     """
     fin = a.financial
     horizon = a.analysis.financial_horizon_years
-    total_capex = sum(s.net_capex for s in stages)
+
+    # Only complete stages contribute — incomplete (input-required) investments are
+    # excluded so the portfolio is never based on missing assumptions.
+    included = [s for s in stages if s.complete]
+    excluded = [s for s in stages if not s.complete]
+    total_capex = sum(s.net_capex for s in included)
 
     year_rows: List[CashflowRow] = []
     for y in range(1, horizon + 1):
-        net = sum(s.year_nets[y - 1] for s in stages if len(s.year_nets) >= y)
+        net = sum(s.year_nets[y - 1] for s in included if len(s.year_nets) >= y)
         year_rows.append(CashflowRow(year=y, net_cash_flow=net))
 
     warnings = [
@@ -422,10 +477,16 @@ def portfolio(
         f"({' → '.join(order)}); each stage counts only its marginal benefit, so "
         "the total is not the sum of the standalone results.",
     ]
+    for s in excluded:
+        warnings.append(f"Excluded from portfolio (input required): {s.result.name}.")
     extra = {
         "investment_order": order,
-        "stage_ids": [s.result.id for s in stages],
+        "stage_ids": [s.result.id for s in included],
+        "excluded_ids": [s.result.id for s in excluded],
         "total_capex_eur": total_capex,
     }
-    return _finalize("portfolio", "Combined HARVEST portfolio",
-                     total_capex, year_rows, fin.discount_rate_pct, extra, warnings)
+    built = _finalize("portfolio", "Combined HARVEST portfolio",
+                      total_capex, year_rows, fin.discount_rate_pct, extra, warnings)
+    if not included:
+        built.complete = False
+    return built

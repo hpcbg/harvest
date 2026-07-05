@@ -329,13 +329,19 @@ dynamic_events:
 
 # ── ROI & Investment analysis ──────────────────────────────────────────────────
 # Long-term return-on-investment model for the main HARVEST investments.
-# IMPORTANT: economic values below are ZERO/DISABLED by default on purpose — they
-# are inputs the operator must supply.  The dashboard marks zero/default values as
-# "Input required" rather than presenting an unsupported but precise-looking ROI.
-# A fully worked *demonstration* set (clearly labelled, NOT market quotations) is
-# provided in config.local.yaml.example.
+#
+# The economic values below are DEMONSTRATION ASSUMPTIONS — illustrative figures
+# chosen so the ROI dashboard shows meaningful numbers out of the box. They are
+# NOT current market prices, supplier quotations or verified operating data.
+# Replace every figure with supplier quotations and local operating data before
+# making an investment decision. Override any value in config.local.yaml.
+#
+# Operational values (fleet size, PV capacity, chargers, tasks, seed, tariffs,
+# scenarios, …) are NOT set here — ROI always takes them from the latest
+# successful Operations simulation run.
 roi:
   enabled: true
+  demonstration_assumptions: true     # true → dashboard labels the figures as demo
 
   analysis:
     period_mode: auto                 # exact | representative_month | auto
@@ -345,14 +351,14 @@ roi:
     default_end_date: "2026-12-31"
     financial_horizon_years: 10
     currency: EUR
-    scenario: full_smart              # operating strategy simulated for ROI runs
     base_seed: 42                     # daily_seed = base_seed + YYYYMMDD
+    # NOTE: no `scenario` here — ROI evaluates every scenario from the Operations run.
 
   financial:
     discount_rate_pct: 6.0
     general_cost_escalation_pct: 2.0
     electricity_price_escalation_pct: 2.5
-    diesel_price_escalation_pct: 2.5
+    diesel_price_escalation_pct: 3.0
     maintenance_escalation_pct: 2.0
 
   service_value:
@@ -360,67 +366,67 @@ roi:
     downtime_cost_eur_per_hour: 0.0
 
   electric_fleet:
-    electric_tractor_purchase_eur: 0.0
-    diesel_equivalent_purchase_eur: 0.0
-    electric_maintenance_eur_per_hour: 0.0
-    charger_capex_eur_each: 0.0
-    charger_installation_eur_each: 0.0
-    grant_eur: 0.0
-    residual_value_eur: 0.0
-    battery_replacement_year: null
-    battery_replacement_eur: 0.0
+    electric_tractor_purchase_eur_each: 120000    # € per electric tractor
+    diesel_equivalent_purchase_eur_each: 90000    # € per equivalent diesel tractor
+    electric_maintenance_eur_per_hour: 3.5        # € per operating hour
+    charger_capex_eur_each: 7500                  # € per charger
+    charger_installation_eur_each: 2500           # € per charger
+    grant_eur_total: 0                            # € total subsidy for the fleet+chargers
+    residual_value_eur_each: 20000               # € per electric tractor at horizon end
+    battery_replacement_year: 10                  # replace traction battery in this year
+    battery_replacement_eur_each: 25000           # € per tractor
 
   diesel:
-    fuel_price_eur_per_litre: 0.0
-    travel_litres_per_100km: 0.0
-    pto_litres_per_hour: 0.0
-    idle_litres_per_hour: 0.0
-    maintenance_eur_per_hour: 0.0
-    co2_kg_per_litre: 0.0
+    fuel_price_eur_per_litre: 1.55
+    travel_litres_per_100km: 18.0
+    pto_litres_per_hour: 8.0
+    idle_litres_per_hour: 2.0
+    maintenance_eur_per_hour: 7.0
+    co2_kg_per_litre: 2.68
 
-  farm_pv:
-    capex_eur_per_kwp: 0.0
-    fixed_installation_eur: 0.0
-    annual_om_pct_of_capex: 0.0
+  farm_pv:                            # installed kWp comes from Operations
+    capex_eur_per_kwp: 950
+    fixed_installation_eur: 2500
+    annual_om_pct_of_capex: 1.0
     annual_om_eur: 0.0
     annual_degradation_pct: 0.5
-    feed_in_tariff_eur_per_kwh: 0.0
-    export_enabled: false
-    grant_eur: 0.0
-    inverter_replacement_year: null
-    inverter_replacement_eur: 0.0
-    residual_value_eur: 0.0
+    feed_in_tariff_eur_per_kwh: 0.06
+    export_surplus_enabled: false
+    grant_eur: 0
+    inverter_replacement_year: 10
+    inverter_replacement_eur: 3000
+    residual_value_eur: 0
     lifetime_years: 25
 
-  tractor_roof_pv:
-    capex_eur_per_tractor: 0.0
-    installation_eur_per_tractor: 0.0
-    annual_om_eur_per_tractor: 0.0
+  tractor_roof_pv:                    # panel W and equipped-tractor count come from Operations
+    capex_eur_per_tractor: 1500
+    installation_eur_per_tractor: 500
+    annual_om_eur_per_tractor: 40
     annual_degradation_pct: 0.5
-    replacement_year: null
-    replacement_eur_per_tractor: 0.0
-    grant_eur: 0.0
+    replacement_year: 10
+    replacement_eur_per_tractor: 600
+    grant_eur: 0
     equipped_tractors: null           # null → count tractors with has_pv_roof
-    residual_value_eur: 0.0
+    residual_value_eur: 0
 
-  outages:
+  outages:                            # disabled by default, but demo assumptions populated
     enabled: false
-    frequency_per_year: 0.0
-    average_duration_hours: 0.0
-    value_of_lost_load_eur_per_kwh: 0.0
-    downtime_cost_eur_per_hour: 0.0
-    task_disruption_cost_eur_per_hour: 0.0
+    frequency_per_year: 1.5
+    average_duration_hours: 3.0
+    value_of_lost_load_eur_per_kwh: 4.0
+    downtime_cost_eur_per_hour: 100
+    task_disruption_cost_eur_per_hour: 50
     islanding_enabled: false
-    critical_load_kw: 0.0
-    backup_battery_kwh: 0.0
-    backup_battery_usable_pct: 80.0
+    critical_load_kw: 3.0
+    backup_battery_kwh: 50
+    backup_battery_usable_pct: 80
     backup_reserve_soc_pct: 10.0
-    backup_max_power_kw: 0.0
+    backup_max_power_kw: 10
     v2l_enabled: false
-    v2l_min_tractor_soc_pct: 30.0
-    islanding_capex_eur: 0.0
-    backup_capex_eur: 0.0
-    grant_eur: 0.0
+    v2l_min_tractor_soc_pct: 30
+    islanding_capex_eur: 6000
+    backup_capex_eur: 20000
+    grant_eur: 0
     seed: 42
 
   sensitivity:

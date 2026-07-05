@@ -26,7 +26,7 @@ from typing import Any, Dict, List
 from main import load_yaml_with_local
 
 from . import export
-from .engine import run_roi_analysis
+from .engine import operations_from_config, run_roi_analysis
 from .validation import ROIValidationError
 
 
@@ -42,7 +42,8 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
                    choices=["exact", "representative_month", "auto"],
                    help="Period calculation method")
     p.add_argument("--horizon", type=int, default=None, help="Financial horizon (years)")
-    p.add_argument("--scenario", default=None, help="Operating scenario to use for ROI runs")
+    p.add_argument("--scenarios", default=None,
+                   help="Comma-separated config scenario names to evaluate (default: all)")
     p.add_argument("--investments", default=None,
                    help="Comma-separated ids "
                         "(electric_fleet,farm_pv,tractor_roof_pv,backup_islanding,portfolio)")
@@ -64,8 +65,12 @@ def main(argv: List[str] | None = None) -> int:
         request["period_mode"] = args.period_mode
     if args.horizon is not None:
         request["horizon"] = args.horizon
-    if args.scenario:
-        request["scenario"] = args.scenario
+    # ROI evaluates every scenario in the config unless --scenarios restricts it.
+    ops = operations_from_config(config)
+    if args.scenarios:
+        wanted = {s.strip() for s in args.scenarios.split(",") if s.strip()}
+        ops["scenarios"] = [s for s in ops["scenarios"] if s["id"] in wanted or s["name"] in wanted]
+    request["operations"] = ops
     if args.investments:
         request["investments"] = [s.strip() for s in args.investments.split(",") if s.strip()]
     else:
@@ -80,26 +85,36 @@ def main(argv: List[str] | None = None) -> int:
         print(f"  Invalid request: {e}", file=sys.stderr)
         return 2
 
-    cur = report["meta"].get("currency", "EUR")
     meta = report["meta"]
+    cur = meta.get("currency", "EUR")
     print(f"  Period      : {meta['start_date']} -> {meta['end_date']} "
           f"({meta['period_mode']}, {meta['simulations_run']} sims, "
           f"{meta['days_represented']} days represented)")
     print(f"  Horizon     : {meta['financial_horizon_years']} yr @ "
           f"{meta['discount_rate_pct']}% discount")
+    print(f"  Scenarios   : {', '.join(meta.get('scenarios', []))}")
 
     def _line(prefix: str, r: Dict[str, Any]) -> None:
         m = r["metrics"]
-        print(f"  {prefix} {r['name']:<44} "
+        if m.get("status") == "input_required":
+            print(f"  {prefix} {r['name']:<40} INPUT REQUIRED: {'; '.join(m.get('missing', []))}")
+            return
+        print(f"  {prefix} {r['name']:<40} "
               f"CAPEX {cur} {m.get('net_capex_eur')}  "
               f"NPV {cur} {m.get('npv_eur')}  "
               f"payback {m.get('simple_payback_years')} yr  "
               f"ROI {m.get('roi_pct')}%")
 
+    print("  Long-term operational comparison:")
+    for lt in report.get("long_term", []):
+        print(f"    - {lt['scenario_name']:<20} grid {lt['grid_kwh_annual']} kWh/yr  "
+              f"cost {cur} {lt['grid_cost_annual']}/yr  "
+              f"tasks {lt['tasks_completed']}/{lt['total_tasks']}")
+    print("  Investments:")
     for r in report.get("investments", []):
         _line("-", r)
-    if report.get("portfolio"):
-        _line("=", report["portfolio"])
+    for r in report.get("portfolios", []):
+        _line("=", r)
 
     out_dir = Path(args.out)
     written = export.write_all(report, out_dir)

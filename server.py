@@ -34,12 +34,61 @@ except ImportError as exc:
 # ROI engine is optional — the dashboard Operations view works without it.
 try:
     from roi import run_roi_analysis, ROIValidationError
+    from roi.engine import config_hash
     _ROI_AVAILABLE = True
 except ImportError:
     _ROI_AVAILABLE = False
 
     class ROIValidationError(Exception):
         pass
+
+    def config_hash(cfg):
+        return ""
+
+import time
+import uuid
+
+# ── Operations-run store ──────────────────────────────────────────────────────
+# Single-user local dashboard: retaining only the latest successful Operations run
+# in memory is sufficient.  ROI must be based strictly on this run.
+_LAST_OPS_RUN: Dict[str, Any] = {}
+_OPS_RUN_TTL_SECONDS = 6 * 3600   # expire after 6 hours of inactivity
+
+
+def _store_ops_run(params, scenario_defs, cfg, results) -> Dict[str, str]:
+    """Record the latest successful Operations run and return its identifier."""
+    run_id = uuid.uuid4().hex[:12]
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    one_day = {}
+    for sd, res in zip(scenario_defs, results):
+        sid = sd.get("id") or sd.get("name") or sd.get("label")
+        one_day[sid] = {
+            "completed_tasks": res.get("completed_tasks"),
+            "total_tasks": res.get("total_tasks"),
+            "total_cost_eur": res.get("total_cost_eur"),
+            "task_completion_pct": res.get("task_completion_pct"),
+        }
+    _LAST_OPS_RUN.clear()
+    _LAST_OPS_RUN.update({
+        "run_id": run_id,
+        "timestamp": timestamp,
+        "created_at": time.time(),
+        "params": params,
+        "scenarios": scenario_defs,
+        "cfg": cfg,
+        "hash": config_hash(cfg),
+        "one_day": one_day,
+    })
+    return {"operations_run_id": run_id, "operations_timestamp": timestamp}
+
+
+def _get_ops_run(run_id: str):
+    run = _LAST_OPS_RUN.get("run_id")
+    if not run or run != run_id:
+        return None
+    if (time.time() - _LAST_OPS_RUN.get("created_at", 0)) > _OPS_RUN_TTL_SECONDS:
+        return None
+    return _LAST_OPS_RUN
 
 BASE_DIR   = Path(__file__).parent
 CONFIG_FILE = BASE_DIR / "config.yaml"
@@ -215,8 +264,9 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_json({"error": "chart.umd.js not found — copy it next to server.py"}, 404)
 
-        elif path == "/config":
-            # Return current config as JSON so dashboard can read defaults
+        elif path in ("/config", "/api/config"):
+            # Return current merged config as JSON so the dashboard can read
+            # defaults (including roi: demonstration assumptions). Read-only.
             try:
                 cfg = load_yaml_with_local(CONFIG_FILE)
                 self._send_json(cfg)
@@ -261,13 +311,15 @@ class Handler(BaseHTTPRequestHandler):
             base_cfg = load_yaml_with_local(CONFIG_FILE)
             cfg      = build_config_override(base_cfg, params)
             results  = run_scenarios(cfg, scenario_defs)
-            self._send_json({"results": results})
+            # Record this successful run as the source of truth for ROI.
+            ops = _store_ops_run(params, scenario_defs, cfg, results)
+            self._send_json({"results": results, **ops})
         except Exception as e:
             import traceback
             self._send_json({"error": str(e), "trace": traceback.format_exc()}, 500)
 
     def _handle_roi(self):
-        """POST /api/roi — long-term ROI & investment analysis."""
+        """POST /api/roi — long-term ROI, based strictly on the latest Operations run."""
         if not _ROI_AVAILABLE:
             self._send_json({"error": "ROI module not available on the server."}, 500)
             return
@@ -277,20 +329,36 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": f"bad request: {e}"}, 400)
             return
 
-        params = payload.get("params", {})
+        run_id = payload.get("operations_run_id")
+        run = _get_ops_run(run_id) if run_id else None
+        if run is None:
+            # Missing / unknown / expired identifier → 409 Conflict, clean message.
+            self._send_json(
+                {"error": "Run the Operations simulation before running ROI analysis."}, 409)
+            return
+
+        client_hash = payload.get("operations_hash")
+        if client_hash and client_hash != run["hash"]:
+            self._send_json(
+                {"error": "Operations settings have changed. Run the Operations "
+                          "simulation again before calculating ROI."}, 409)
+            return
+
+        # Operational parameters come from the SAVED run, never from ROI fields.
+        request = dict(payload)
+        request["operations"] = {
+            "run_id": run["run_id"],
+            "timestamp": run["timestamp"],
+            "params": run["params"],
+            "scenarios": run["scenarios"],
+            "one_day": run["one_day"],
+        }
         try:
-            base_cfg = load_yaml_with_local(CONFIG_FILE)
-            # Dashboard simulation overrides (grid/fleet/PV sliders) apply first, so
-            # the ROI runs reflect the same plant the Operations view simulated.
-            cfg = build_config_override(base_cfg, params) if params else base_cfg
-            report = run_roi_analysis(cfg, payload)
+            report = run_roi_analysis(run["cfg"], request)
             self._send_json(report)
         except ROIValidationError as e:
-            # Expected, user-correctable input errors → HTTP 400, no traceback.
             self._send_json({"error": str(e)}, 400)
         except Exception as e:
-            # Unexpected server error — log full trace server-side, send a clean
-            # message to the browser (no Python traceback leaked).
             import traceback
             print("ROI error:\n" + traceback.format_exc(), file=sys.stderr)
             self._send_json({"error": f"ROI analysis failed: {e}"}, 500)

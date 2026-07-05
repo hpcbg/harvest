@@ -536,10 +536,44 @@ different question: *over a 5–20 year horizon, do the main HARVEST investments
 back?* It is available as a dashboard tab, an HTTP endpoint (`POST /api/roi`) and a
 headless CLI (`python -m roi`).
 
-> **All ROI outputs are estimates based on user-supplied assumptions.** The default
-> figures shipped in `config.yaml` are **zero/disabled** on purpose — they are inputs
-> the operator must provide. A fully worked *demonstration* set lives in
-> `config.local.yaml.example` and is **not a commercial quotation**.
+> **All ROI outputs are estimates based on user-supplied assumptions.** The financial
+> figures shipped in `config.yaml` are **demonstration assumptions** — illustrative
+> examples, **not** commercial quotations or verified market prices. Replace them with
+> supplier quotations and local operating data before making an investment decision.
+
+### Connected Operations → ROI workflow
+
+ROI is **not a separate simulator**. It is based strictly on the latest successful
+Operations run:
+
+```
+Configure Operations  →  Run Operations  →  Open ROI  →  Select period & financial
+assumptions  →  Run long-term ROI analysis
+```
+
+- The ROI **Run** button is disabled until Operations has been run successfully. Until
+  then the ROI page shows: *"Run the Operations simulation first. ROI uses the fleet,
+  energy system, tasks, seed, and scenarios from the latest successful Operations run."*
+- A successful `/simulate` returns an **`operations_run_id`**; the server keeps that
+  run's normalised request + merged config in memory. The `/api/roi` request must carry
+  the identifier, and the endpoint rejects a missing / unknown / expired / mismatched id
+  with **HTTP 409** and the message *"Run the Operations simulation before running ROI
+  analysis."* Operational parameters are always taken from the saved run, never from
+  independently editable ROI fields.
+- **All scenarios** selected in Operations are propagated automatically and shown
+  read-only under *"Scenarios from Operations"*. ROI cannot introduce a scenario that
+  was not selected on the Operations page.
+- Operational controls (fleet, PV, chargers, tasks, seed, tariffs, scenarios,
+  prediction backend, MARL/shedding/dynamic-event config…) come from Operations and are
+  displayed read-only in an **Operational basis** card with a *Return to Operations*
+  button. They are never duplicated as editable ROI inputs.
+- Changing **any** Operations input or scenario selection marks the result **stale**,
+  invalidates the ROI source and disables ROI: *"Operations settings have changed. Run
+  the Operations simulation again before calculating ROI."*
+- The ROI page produces **two separate result types**: a **long-term operational
+  comparison** (how every scenario performs over the period) and the **investment
+  analysis** (financial return from paired/counterfactual simulations). They are shown
+  in distinct sections and never merged into one unexplained result.
 
 ### Operational period vs financial horizon
 
@@ -588,6 +622,15 @@ Each PV investment uses **paired simulations**: two otherwise-identical runs tha
 differ only in the asset under study, so savings come from the real simulator
 behaviour, priced at **time-step tariffs** (never a single blended average price).
 
+Every investment is computed **per source scenario** and labelled accordingly
+(e.g. *"Fixed farm PV — Full smart"*, *"Electric fleet — Smart"*), so ROI is never
+silently based on a single hard-coded scenario. Roof PV is only computed for scenarios
+that actually include roof panels. Installed farm-PV kWp, roof-panel W and the equipped
+tractor count all come from the Operations run — the ROI page supplies only unit costs.
+Missing required inputs (e.g. a cleared CAPEX field) yield **"Input required"** rather
+than a misleading zero-year payback, and such incomplete investments are excluded from
+the portfolio.
+
 ### Electric-vs-diesel calculation
 
 A diesel counterfactual performs exactly the electric fleet's workload:
@@ -612,7 +655,7 @@ avoided_grid_cost = baseline_grid_cost − candidate_grid_cost   (paired sims, t
 ```
 
 Farm PV and roof PV are evaluated **independently** with separate ROI results.
-Exported energy has zero value unless `export_enabled` is set (then it uses the
+Exported energy has zero value unless `export_surplus_enabled` is set (then it uses the
 configured feed-in tariff — never net metering unless explicitly configured); PV
 yield **degrades** each year while the value of each kWh **escalates** with the
 electricity price. Farm PV and roof PV savings are never counted twice.
@@ -690,18 +733,37 @@ tornado-style bar chart.
 
 ### Dashboard usage
 
-Open the dashboard and use the header tabs to switch between **Operations** and
-**ROI & Investment**. In the ROI view: set the analysis period, period method and
-financial horizon; tick the investments to analyse; expand the collapsible assumption
-panels (each field shows its unit); then **RUN ROI ANALYSIS**. Results show summary
-cards, an investment comparison table, cash-flow / cost-breakdown / energy /
-sensitivity charts, a reliability panel, and always-visible warnings (distances
-measured vs derived, period exact vs representative, outage simulated vs analytical,
-service-level differences, missing inputs, standalone-overlap). Zero/default inputs
-are marked **Input required** and invalid metrics show **N/A** with the reason.
-Results can be exported as CSV and JSON from the results header.
+Use the header tabs to switch between **Operations** and **ROI & Investment**. First
+configure the farm on the Operations page and **RUN SIMULATION**. That successful run
+becomes the source of truth for ROI. Then open the ROI tab:
+
+1. An **Operational basis** card shows the run's read-only configuration (fleet, PV,
+   chargers, battery, grid cap, tasks/day, seed, scenarios, one-day results) with a
+   *Return to Operations* button. *Scenarios from Operations* are shown as read-only
+   badges — there is no independent scenario selector.
+2. Set the **analysis period**, period method and **financial horizon** (these are the
+   only period controls ROI adds), and adjust the collapsible **financial / investment
+   assumption** panels (each field shows its unit; per-tractor/per-charger amounts are
+   labelled as such). *Reload from config* re-reads `config.yaml` + `config.local.yaml`;
+   *Reset to demo* restores the shipped demonstration values.
+3. **RUN ROI ANALYSIS** (disabled until Operations has run). Results show, in separate
+   sections: the **long-term operational comparison** (every scenario over the period,
+   with charts), the **investment analysis** (per source scenario, with *Input required*
+   for cleared fields), the **combined portfolio** (with a scenario selector defaulting
+   to the best one-day task completion), a **reliability** panel and a **sensitivity**
+   chart. Warnings (demonstration note, distances derived, exact vs representative,
+   outage analytical vs simulated, service-level differences, standalone-overlap) are
+   always visible. Export **CSV / JSON** — both carry the `operations_run_id` and run
+   metadata so a result can be traced back to its exact Operations run.
+
+Changing any Operations control marks ROI **stale** and disables it until Operations is
+re-run — the header shows `ROI unavailable` / `ROI stale` / `ROI ready` / `ROI running`
+/ `ROI complete` / `ROI error`.
 
 ### CLI usage
+
+The headless CLI evaluates every scenario in the config (or a subset via `--scenarios`);
+it does not require the dashboard or a saved run:
 
 ```bash
 python -m roi \
@@ -709,28 +771,38 @@ python -m roi \
     --start 2026-01-01 \
     --end 2026-12-31 \
     --period-mode auto \
-    --horizon 10
+    --horizon 10 \
+    --scenarios smart,full_smart      # optional; default = all config scenarios
 ```
 
 Generated files (default `outputs/roi/`):
 
-- `roi_summary.csv` — one row per investment plus the combined portfolio
+- `roi_summary.csv` — one row per investment (per scenario) plus each portfolio; carries `operations_run_id` + scenario
 - `roi_cashflows.csv` — one row per investment per year
-- `roi_assumptions.json` — the resolved assumptions actually used
-- `roi_report.json` — the full response (meta, operational, investments, portfolio, sensitivity)
+- `roi_assumptions.json` — resolved assumptions + `export_meta` (run traceability)
+- `roi_report.json` — the full response (meta, operational basis, long-term, investments, portfolios, sensitivity)
 
 ### Configuration
 
-The `roi:` section of `config.yaml` documents every assumption
-(`analysis`, `financial`, `service_value`, `electric_fleet`, `diesel`, `farm_pv`,
-`tractor_roof_pv`, `outages`, `sensitivity`). Economic assumptions are **never**
-hard-coded in Python — they come from config, and `config.local.yaml` can override any
-of them without a git commit. See `config.local.yaml.example` for a labelled demo set.
+The `roi:` section of `config.yaml` holds **demonstration assumptions** and documents
+every field (`analysis`, `financial`, `service_value`, `electric_fleet`, `diesel`,
+`farm_pv`, `tractor_roof_pv`, `outages`, `sensitivity`). Per-unit costs use explicit key
+names (`electric_tractor_purchase_eur_each`, `charger_capex_eur_each`,
+`residual_value_eur_each`, `grant_eur_total`, …). Economic assumptions are **never**
+hard-coded in Python or JavaScript — the dashboard loads them from the server
+(`GET /api/config`), and `config.local.yaml` can override any of them without a git
+commit. **Operational** values (fleet, PV, chargers, tasks, seed, tariffs, scenarios)
+are **not** in the `roi:` section — ROI always takes them from the Operations run.
+`roi.demonstration_assumptions: true` makes the dashboard label the figures as demo.
 
 ### Warnings & limitations
 
-- ROI outputs are **estimates** based on user-supplied assumptions; default
+- ROI is based strictly on the **latest successful Operations run**; it cannot run
+  before Operations, and any Operations change invalidates a prior ROI result.
+- ROI outputs are **estimates** based on user-supplied assumptions; the shipped
   demonstration prices are **not** commercial quotations.
+- Missing required assumptions (e.g. a cleared CAPEX) show **"Input required"** — not a
+  zero-year payback — and are excluded from the portfolio.
 - Grid-tied PV provides **no** outage backup unless islanding is enabled.
 - Standalone investment results **cannot always be added together** — use the portfolio.
 - The stationary backup battery is an **analytical** model (not simulated); its results

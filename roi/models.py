@@ -22,6 +22,14 @@ def _f(d: Dict[str, Any], key: str, default: float) -> float:
     return default if v is None else float(v)
 
 
+def _fa(d: Dict[str, Any], keys, default: float) -> float:
+    """Read the first present key from ``keys`` (supports renamed aliases)."""
+    for k in keys:
+        if k in d and d[k] is not None:
+            return float(d[k])
+    return default
+
+
 def _opt_int(d: Dict[str, Any], key: str) -> Optional[int]:
     v = d.get(key)
     return None if v in (None, "", "null") else int(v)
@@ -109,16 +117,21 @@ class ElectricFleetAssumptions:
     @classmethod
     def from_config(cls, roi: Dict[str, Any]) -> "ElectricFleetAssumptions":
         e = roi.get("electric_fleet", {}) or {}
+        # Per-unit key names (…_each / …_total) are preferred; older un-suffixed
+        # names are accepted as aliases for backward compatibility.
         return cls(
-            electric_tractor_purchase_eur=_f(e, "electric_tractor_purchase_eur", 0.0),
-            diesel_equivalent_purchase_eur=_f(e, "diesel_equivalent_purchase_eur", 0.0),
+            electric_tractor_purchase_eur=_fa(
+                e, ("electric_tractor_purchase_eur_each", "electric_tractor_purchase_eur"), 0.0),
+            diesel_equivalent_purchase_eur=_fa(
+                e, ("diesel_equivalent_purchase_eur_each", "diesel_equivalent_purchase_eur"), 0.0),
             electric_maintenance_eur_per_hour=_f(e, "electric_maintenance_eur_per_hour", 0.0),
             charger_capex_eur_each=_f(e, "charger_capex_eur_each", 0.0),
             charger_installation_eur_each=_f(e, "charger_installation_eur_each", 0.0),
-            grant_eur=_f(e, "grant_eur", 0.0),
-            residual_value_eur=_f(e, "residual_value_eur", 0.0),
+            grant_eur=_fa(e, ("grant_eur_total", "grant_eur"), 0.0),
+            residual_value_eur=_fa(e, ("residual_value_eur_each", "residual_value_eur"), 0.0),
             battery_replacement_year=_opt_int(e, "battery_replacement_year"),
-            battery_replacement_eur=_f(e, "battery_replacement_eur", 0.0),
+            battery_replacement_eur=_fa(
+                e, ("battery_replacement_eur_each", "battery_replacement_eur"), 0.0),
         )
 
 
@@ -169,7 +182,7 @@ class FarmPVAssumptions:
             annual_om_eur=_f(p, "annual_om_eur", 0.0),
             annual_degradation_pct=_f(p, "annual_degradation_pct", 0.5),
             feed_in_tariff_eur_per_kwh=_f(p, "feed_in_tariff_eur_per_kwh", 0.0),
-            export_enabled=bool(p.get("export_enabled", False)),
+            export_enabled=bool(p.get("export_surplus_enabled", p.get("export_enabled", False))),
             grant_eur=_f(p, "grant_eur", 0.0),
             inverter_replacement_year=_opt_int(p, "inverter_replacement_year"),
             inverter_replacement_eur=_f(p, "inverter_replacement_eur", 0.0),
@@ -342,6 +355,8 @@ class OperationalTotals:
     tasks_completed: float = 0.0
     tasks_missed: float = 0.0
     total_tasks: float = 0.0
+    peak_grid_kw: float = 0.0
+    downtime_pct: float = 0.0
     days_represented: int = 0
     simulations_run: int = 0
     profile: List[Dict[str, Any]] = field(default_factory=list)

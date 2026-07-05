@@ -126,11 +126,16 @@ def _representative_days(start: date, end: date, method: str,
 
 def make_variant_config(
     base_config: Dict[str, Any],
-    scenario: str,
+    scenario_def: Any,
     farm_pv_kwp: Optional[float],
     roof_panel_w: Optional[float],
 ) -> Dict[str, Any]:
     """Return a deep-copied config with a single ROI scenario and PV toggles.
+
+    ``scenario_def`` may be a scenario name (looked up in ``config['scenarios']``)
+    or a full scenario dict (``name``/``id``, ``charging_strategy`` and flags) —
+    the latter lets ROI inherit exactly the strategy/flags the Operations run
+    used for each selected scenario.
 
     ``farm_pv_kwp`` / ``roof_panel_w`` set the installed capacities for this
     variant (use 0 to switch an asset off; ``None`` to keep the config value).
@@ -147,17 +152,21 @@ def make_variant_config(
     roof_on = (roof_panel_w is None and cfg.get("tractor_pv", {}).get("panel_peak_w", 0) > 0) \
         or (roof_panel_w is not None and roof_panel_w > 0)
 
-    # Find the requested scenario definition to inherit its charging strategy.
-    src = None
-    for s in cfg.get("scenarios", []):
-        if s.get("name") == scenario:
-            src = s
-            break
-    if src is None:
-        src = {"name": scenario, "charging_strategy": "smart"}
+    if isinstance(scenario_def, dict):
+        src = scenario_def
+        name = src.get("name") or src.get("id") or "scenario"
+    else:
+        name = scenario_def
+        src = None
+        for s in cfg.get("scenarios", []):
+            if s.get("name") == scenario_def:
+                src = s
+                break
+        if src is None:
+            src = {"name": name, "charging_strategy": "smart"}
 
     variant_scenario = {
-        "name": src.get("name", scenario),
+        "name": name,
         "charging_strategy": src.get("charging_strategy", "smart"),
         "tractor_pv_enabled": bool(roof_on),
         "load_shedding": bool(src.get("load_shedding", False)),
@@ -241,6 +250,8 @@ def run_period(
         totals.tasks_completed += s.get("completed_tasks", 0) * weight
         totals.tasks_missed += s.get("missed_tasks", 0) * weight
         totals.total_tasks += s.get("total_tasks", 0) * weight
+        totals.peak_grid_kw = max(totals.peak_grid_kw, s.get("peak_grid_kw", 0.0))
+        totals.downtime_pct += s.get("tractor_downtime_pct", 0.0) * weight
 
         # Exported / curtailed PV: generation not consumed on-site.
         gen = s.get("farm_pv_generated_kwh", 0.0) + s.get("tractor_pv_generated_kwh", 0.0)
@@ -261,6 +272,8 @@ def run_period(
                  "tasks_missed", "total_tasks"):
         setattr(totals, attr, getattr(totals, attr) * scale)
 
+    # Downtime is a percentage → weighted average, not annualised; peak is a max.
+    totals.downtime_pct = (totals.downtime_pct / days_represented) if days_represented > 0 else 0.0
     totals.days_represented = int(round(days_represented))
     totals.simulations_run = sims
 
