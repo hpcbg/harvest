@@ -74,11 +74,25 @@ harvest/
 
 ## Quick Start
 
-### Install dependencies
+### Clone this repositoy
+git clone https://github.com/hpcbg/harvest.git
+cd harvest
 
+### Create virtual environment and install dependencies
+On Linux Shell:
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+On Windows PowerShell:
+```bash
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
 
 ### Option A — Command Line
 
