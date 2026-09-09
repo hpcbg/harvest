@@ -1,0 +1,221 @@
+# HARVEST — Docker Compose stack
+# ===============================
+# Profiles keep the lightweight core separable from the integrations
+# (WISEPACK's mode philosophy expressed natively in compose):
+#
+#   (no profile)        harvest dashboard/API only            [backend: sim]
+#   --profile devices     + farm device simulator (Modbus/OPC-UA)
+#   --profile fiware      + Orion-LD context broker + sync daemon
+#   --profile ros2        + ROS 2 fleet bridge
+#   --profile isaac       + fleet & Isaac bridges on the HOST network, so a
+#                           host-run NVIDIA Isaac Sim can join over DDS
+#   --profile isaac-demo  + GPU-free simulator stand-in (with isaac)
+#
+# Everything except the isaac profile runs on a normal bridge network:
+# HARVEST's integrations are HTTP-based (fleet API, NGSI-LD), so none of the
+# host-networking that DDS forces on WISEPACK/TEMPO is needed and DDS traffic
+# stays inside the ros2-bridge container.  The isaac profile is the
+# exception: Isaac Sim runs on the host, outside Docker (WISEPACK rule), and
+# Fast DDS discovery does not cross a bridged Docker network -- so the two
+# bridge nodes get network_mode: host + ipc: host and reach HARVEST through
+# its published localhost port.
+#
+# Prefer ./run_harvest_dashboard.sh, which picks profiles, waits for health
+# and prints the URLs; plain `docker compose --profile devices up` works too.
+
+name: harvest
+
+services:
+  harvest:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: harvest:app
+    command: python server.py
+    working_dir: /harvest
+    volumes:
+      - .:/harvest
+    environment:
+      HARVEST_HOST: 0.0.0.0
+      HARVEST_NO_BROWSER: "1"
+      HARVEST_FLEET_BACKEND: ${HARVEST_FLEET_BACKEND:-sim}
+      HARVEST_MODBUS_HOST: farm-sim
+      HARVEST_OPCUA_ENDPOINT: opc.tcp://farm-sim:4840/harvest/
+      # Diagnostics probes (resolve only when the fiware profile is up; an
+      # unresolvable name simply reports the service as inactive/optional).
+      ORION_URL: http://orion:1026
+      HARVEST_MONGO_HOST: mongodb:27017
+    ports:
+      - "${HARVEST_PORT:-8765}:8765"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ── Field-device simulator (Modbus TCP + OPC-UA over one farm state) ───────
+  farm-sim:
+    profiles: [devices]
+    image: harvest:app
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: python -m harvest_integrations.simulators.farm_sim --config config.yaml
+    working_dir: /harvest
+    volumes:
+      - .:/harvest
+    expose:
+      - "5020"   # Modbus TCP
+      - "4840"   # OPC-UA
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import socket; socket.create_connection(('127.0.0.1', 5020), 3).close()"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ── FIWARE context broker (same Orion-LD/Mongo pairing WISEPACK validates) ─
+  mongodb:
+    profiles: [fiware]
+    image: mongo:7.0
+    command: --bind_ip_all
+    volumes:
+      - harvest_mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping: 1}).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  orion:
+    profiles: [fiware]
+    image: fiware/orion-ld:1.13.0-PRE-1835
+    command: -dbhost mongodb -mongocOnly
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    ports:
+      - "${ORION_PORT:-1026}:1026"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:1026/version"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  fiware-sync:
+    profiles: [fiware]
+    image: harvest:app
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: >
+      python -m harvest_integrations.fiware.sync
+      --harvest http://harvest:8765
+      --broker http://orion:1026
+      --notify-url http://fiware-sync:8766/notify
+    working_dir: /harvest
+    volumes:
+      - .:/harvest
+    depends_on:
+      harvest:
+        condition: service_healthy
+      orion:
+        condition: service_healthy
+
+  # ── ROS 2 fleet bridge (DDS stays inside this container) ───────────────────
+  ros2-bridge:
+    profiles: [ros2]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ros2
+    image: harvest:ros2
+    working_dir: /harvest/ros2_ws
+    volumes:
+      - .:/harvest
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+      COLCON_LOG_PATH: /tmp/ros_log   # keep colcon logs out of the bind mount too
+    # Build out-of-tree (/tmp) so the bind-mounted repo never collects
+    # root-owned build/install/log directories.
+    command:
+      - bash
+      - -lc
+      - >-
+        source /opt/ros/jazzy/setup.bash &&
+        colcon build --symlink-install
+        --build-base /tmp/ros_build --install-base /tmp/ros_install
+        --base-paths src &&
+        source /tmp/ros_install/setup.bash &&
+        ros2 launch harvest_ros bridge.launch.py harvest_url:=http://harvest:8765
+    depends_on:
+      harvest:
+        condition: service_healthy
+
+  # ── Isaac mode: both bridges on the host network (DDS must reach the host) ─
+  # Same image and out-of-tree colcon build as ros2-bridge; one launch starts
+  # the fleet bridge plus the Isaac bridge.  HARVEST is reached via its
+  # published localhost port because this container has no bridge network.
+  ros2-bridge-isaac:
+    profiles: [isaac]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ros2
+    image: harvest:ros2
+    network_mode: host
+    ipc: host
+    working_dir: /harvest/ros2_ws
+    volumes:
+      - .:/harvest
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+      # Same RMW as scripts/run_isaac_sim.sh pins for Isaac -- different RMWs
+      # simply never discover each other (WISEPACK finding).
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      COLCON_LOG_PATH: /tmp/ros_log
+      HARVEST_REPO_ROOT: /harvest
+    command:
+      - bash
+      - -lc
+      - >-
+        source /opt/ros/jazzy/setup.bash &&
+        colcon build --symlink-install
+        --build-base /tmp/ros_build --install-base /tmp/ros_install
+        --base-paths src &&
+        source /tmp/ros_install/setup.bash &&
+        ros2 launch harvest_ros bridge.launch.py isaac_bridge:=true
+        harvest_url:=http://127.0.0.1:${HARVEST_PORT:-8765}
+    depends_on:
+      harvest:
+        condition: service_healthy
+
+  # ── GPU-free simulator stand-in (isaac-demo mode) ──────────────────────────
+  # Speaks the same harvest-sim/1.0 contract as Isaac, driven by the same
+  # motion core, so the whole loop runs without a GPU or Isaac install.
+  isaac-sim-stub:
+    profiles: [isaac-demo]
+    image: harvest:ros2
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ros2
+    network_mode: host
+    ipc: host
+    working_dir: /harvest
+    volumes:
+      - .:/harvest
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      PYTHONPATH: /harvest
+    command:
+      - bash
+      - -lc
+      - >-
+        source /opt/ros/jazzy/setup.bash &&
+        python3 -m harvest_integrations.simulators.isaac.stub
+    depends_on:
+      harvest:
+        condition: service_healthy
+
+volumes:
+  harvest_mongo:

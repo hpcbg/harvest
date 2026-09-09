@@ -174,6 +174,38 @@
     /* Error */
     .errbanner{background:var(--red-lt);border:1px solid var(--red);border-radius:var(--r);padding:12px 16px;font-size:12px;color:var(--red);font-family:var(--mono);display:none;white-space:pre-wrap;word-break:break-all}
     hr{border:none;border-top:1px solid var(--border)}
+    /* ── Diagnostics view ── */
+    .diag-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+    .diag-card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);padding:11px 13px}
+    .diag-card .dn{font-size:12px;font-weight:600;color:var(--text2);display:flex;justify-content:space-between;align-items:center;gap:8px}
+    .diag-card .dd{font-size:11px;color:var(--text3);margin-top:5px;line-height:1.45;word-break:break-word}
+    .dstate{font-size:9px;font-family:var(--mono);padding:2px 7px;border-radius:10px;font-weight:700;text-transform:uppercase;white-space:nowrap}
+    .ds-healthy{background:var(--green-lt);color:var(--green)}
+    .ds-simulated{background:var(--amber-lt);color:var(--amber)}
+    .ds-inactive{background:var(--bg2);color:var(--text3);border:1px solid var(--border)}
+    .ds-failed{background:var(--red-lt);color:var(--red)}
+    .ds-unknown{background:var(--bg2);color:var(--text3);border:1px solid var(--border)}
+    .proto-pill{font-size:9px;font-family:var(--mono);padding:1px 6px;border-radius:4px;font-weight:700;text-transform:uppercase}
+    .pr-modbus{background:var(--blue-lt);color:var(--blue)}
+    .pr-opcua{background:var(--teal-lt);color:var(--teal)}
+    .pr-sim{background:var(--amber-lt);color:var(--amber)}
+    .pr-other{background:var(--bg2);color:var(--text3);border:1px solid var(--border)}
+    .diag-panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--rl);padding:16px}
+    .diag-title{font-size:13px;font-weight:600;margin-bottom:10px;display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
+    .diag-note{font-size:10px;color:var(--text3);font-weight:400}
+    .demo-steps{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+    .demo-step{display:flex;gap:10px;align-items:flex-start;font-size:12px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r);background:var(--bg3)}
+    .demo-step .st-ic{font-family:var(--mono);font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;white-space:nowrap;margin-top:1px}
+    .st-ok{background:var(--green-lt);color:var(--green)}
+    .st-fail{background:var(--red-lt);color:var(--red)}
+    .st-skip{background:var(--bg2);color:var(--text3);border:1px solid var(--border)}
+    .demo-step .st-tt{font-weight:600;color:var(--text2)}
+    .demo-step .st-dd{color:var(--text3);font-size:11px;margin-top:2px;line-height:1.45}
+    .demo-summary{margin-top:10px;font-size:12px;padding:9px 12px;border-radius:var(--r)}
+    .demo-summary.ok{background:var(--green-lt);color:var(--green)}
+    .demo-summary.bad{background:var(--red-lt);color:var(--red)}
+    .diag-cmd{font-family:var(--mono);font-size:10px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 7px;margin-top:4px;white-space:nowrap;overflow-x:auto}
+    .diag-cmd .c{color:var(--amber)}
     /* ── View tabs (Operations / ROI) ── */
     .vtabs{display:flex;gap:4px;margin-left:6px}
     .vtab{padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;color:var(--text3);border:1px solid var(--border);background:var(--bg3);user-select:none;transition:all .15s}
@@ -239,6 +271,7 @@
     <div class="vtabs">
       <div class="vtab active" id="vtab-ops" onclick="switchView('ops')">Operations</div>
       <div class="vtab" id="vtab-roi" onclick="switchView('roi')">ROI &amp; Investment</div>
+      <div class="vtab" id="vtab-diag" onclick="switchView('diag')">Diagnostics</div>
     </div>
     <div class="spacer"></div>
     <button class="theme-btn" id="tbtn" onclick="toggleTheme()">☀</button>
@@ -351,6 +384,46 @@
         misleading zero result.
       </div>
     </div><!-- /roi-controls -->
+
+    <div id="diag-controls" class="sidebar-view" style="display:none">
+      <hr>
+      <div>
+        <div class="slabel">Integration stack</div>
+        <div style="font-size:11px;color:var(--text3);line-height:1.55">
+          Read-only operational view of the external-integration services:
+          live fleet backend, Modbus/OPC-UA field devices, FIWARE NGSI-LD
+          mirror, the optional ROS&nbsp;2 bridge and the optional Isaac Sim
+          physical-simulation layer.
+          Refreshes every 3&nbsp;s while open.
+        </div>
+      </div>
+      <hr>
+      <div>
+        <div class="slabel">Startup modes</div>
+        <div style="font-size:10px;color:var(--text3)">default — devices + FIWARE:</div>
+        <div class="diag-cmd"><span class="c">./run_harvest_dashboard.sh</span></div>
+        <div style="font-size:10px;color:var(--text3);margin-top:7px">with the ROS 2 bridge:</div>
+        <div class="diag-cmd"><span class="c">./run_harvest_dashboard.sh full</span></div>
+        <div style="font-size:10px;color:var(--text3);margin-top:7px">with the Isaac Sim bridge (simulator on the host):</div>
+        <div class="diag-cmd"><span class="c">./run_harvest_dashboard.sh isaac</span></div>
+        <div style="font-size:10px;color:var(--text3);margin-top:7px">GPU-free simulator stand-in:</div>
+        <div class="diag-cmd"><span class="c">./run_harvest_dashboard.sh isaac-demo</span></div>
+        <div style="font-size:10px;color:var(--text3);margin-top:7px">lightweight, no Docker:</div>
+        <div class="diag-cmd"><span class="c">./run_harvest_dashboard.sh lite</span></div>
+        <div style="font-size:10px;color:var(--text3);margin-top:7px">end-to-end check:</div>
+        <div class="diag-cmd"><span class="c">./validate_harvest_stack.sh</span></div>
+      </div>
+      <hr>
+      <button class="run-btn" id="demo-btn" onclick="runDemo()">
+        <span id="demo-btxt">RUN CROSS-PROTOCOL DEMO</span>
+        <div class="spin" id="demo-spin"></div>
+      </button>
+      <div style="font-size:10px;color:var(--text3);line-height:1.5">
+        Issues a charge command through the common DeviceIO abstraction
+        (OPC-UA in devices mode), observes the effect on the grid meter
+        (Modbus) and, when FIWARE is up, the same state mirrored as NGSI-LD.
+      </div>
+    </div><!-- /diag-controls -->
   </aside>
 
   <main class="main">
@@ -384,6 +457,43 @@
       <div class="errbanner" id="roi-errbanner"></div>
       <div id="roi-results" style="display:none;flex-direction:column;gap:16px"></div>
     </div><!-- /roi-main -->
+
+    <div id="diag-main" style="display:none;flex-direction:column;gap:16px;flex:1">
+      <div class="errbanner" id="diag-errbanner"></div>
+      <div class="diag-panel">
+        <div class="diag-title">Service health
+          <span class="diag-note" id="diag-updated">waiting for first refresh…</span></div>
+        <div class="diag-grid" id="diag-services"></div>
+      </div>
+      <div class="diag-panel">
+        <div class="diag-title">Devices
+          <span class="diag-note">read through the common DeviceIO abstraction —
+            protocol · reachability · latest values</span></div>
+        <div style="overflow-x:auto">
+          <table class="task-table" id="diag-devtable">
+            <thead><tr><th>Device</th><th>Kind</th><th>Protocol</th><th>Endpoint</th>
+              <th>Status</th><th>Latest values</th><th>Age</th></tr></thead>
+            <tbody id="diag-devices"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="diag-panel">
+        <div class="diag-title">Cross-protocol demonstration
+          <span class="diag-note" id="demo-state">idle</span></div>
+        <div style="font-size:12px;color:var(--text2);line-height:1.55">
+          One charge command, three perspectives: the command is issued through
+          the generic fleet interface (backed by <strong>OPC-UA</strong> on the
+          tractor BMS in devices mode), the resulting charger power and grid
+          draw are read back through the <strong>Modbus</strong> grid meter, and
+          the same state appears as <strong>NGSI-LD</strong> entities in the
+          FIWARE context broker.  In <em>sim</em> mode the identical sequence
+          runs against the reference simulation (protocol shown as
+          <span class="proto-pill pr-sim">sim</span>).
+        </div>
+        <div class="demo-steps" id="demo-steps"></div>
+        <div id="demo-summary"></div>
+      </div>
+    </div><!-- /diag-main -->
   </main>
 </div>
 
@@ -773,14 +883,117 @@ function switchTab(i){
 let currentView='ops';
 function switchView(v){
   currentView=v;
-  document.getElementById('vtab-ops').classList.toggle('active',v==='ops');
-  document.getElementById('vtab-roi').classList.toggle('active',v==='roi');
-  document.getElementById('ops-controls').style.display=v==='ops'?'flex':'none';
-  document.getElementById('roi-controls').style.display=v==='roi'?'flex':'none';
-  document.getElementById('ops-main').style.display=v==='ops'?'flex':'none';
-  document.getElementById('roi-main').style.display=v==='roi'?'flex':'none';
+  for(const k of ['ops','roi','diag']){
+    document.getElementById('vtab-'+k).classList.toggle('active',v===k);
+    document.getElementById(k+'-controls').style.display=v===k?'flex':'none';
+    document.getElementById(k+'-main').style.display=v===k?'flex':'none';
+  }
   if(v==='roi' && !roiBuilt){buildRoiPanels();roiBuilt=true;}
   if(v==='roi')updateRoiGate();
+  if(v==='diag')startDiag();else stopDiag();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Diagnostics view — integration stack health + cross-protocol demo.
+   Read-only: everything shown comes from GET /api/diagnostics; the only
+   action is starting the scripted demo, which runs server-side through the
+   generic fleet interface (no protocol logic in this UI).
+   ═══════════════════════════════════════════════════════════════════════ */
+let diagTimer=null, demoTimer=null;
+const escDiag=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function startDiag(){ fetchDiag(); if(!diagTimer) diagTimer=setInterval(fetchDiag,3000); }
+function stopDiag(){ if(diagTimer){clearInterval(diagTimer);diagTimer=null;}
+  if(demoTimer){clearInterval(demoTimer);demoTimer=null;} }
+
+async function fetchDiag(){
+  const err=document.getElementById('diag-errbanner');
+  try{
+    const r=await fetch(SRV+'/api/diagnostics',{mode:'cors'});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+    err.style.display='none';
+    renderDiagServices(d.services||[]);
+    renderDiagDevices(d.devices||[]);
+    if(!demoTimer) renderDemo(d.demo);   // demoTimer owns rendering while running
+    document.getElementById('diag-updated').textContent=
+      'updated '+new Date().toLocaleTimeString();
+  }catch(e){
+    err.textContent='Diagnostics unavailable: '+e.message+
+      '\n(the integration layer needs harvest_integrations — see README "External Integrations")';
+    err.style.display='block';
+  }
+}
+
+function renderDiagServices(services){
+  document.getElementById('diag-services').innerHTML=services.map(s=>`
+    <div class="diag-card">
+      <div class="dn">${escDiag(s.name)}
+        <span class="dstate ds-${escDiag(s.state)}">${escDiag(s.state)}</span></div>
+      <div class="dd">${escDiag(s.detail)}</div>
+    </div>`).join('');
+}
+
+function protoPill(p){
+  const cls={modbus:'pr-modbus',opcua:'pr-opcua',sim:'pr-sim'}[p]||'pr-other';
+  return `<span class="proto-pill ${cls}">${escDiag(p)}</span>`;
+}
+
+function renderDiagDevices(devices){
+  const now=Date.now()/1000;
+  document.getElementById('diag-devices').innerHTML=devices.map(d=>{
+    const vals=Object.entries(d.values||{}).map(([k,v])=>
+      `${escDiag(k)}=${typeof v==='number'?(Math.round(v*100)/100):escDiag(v)}`).join('  ');
+    const age=d.last_read_ts?Math.max(0,Math.round(now-d.last_read_ts))+'s':'—';
+    const st=d.reachable===false
+      ?'<span class="dstate ds-failed">unreachable</span>'
+      :(d.reachable===true?'<span class="dstate ds-healthy">online</span>'
+                          :'<span class="dstate ds-unknown">not read</span>');
+    return `<tr><td>${escDiag(d.id)}</td><td>${escDiag(d.kind)}</td>
+      <td>${protoPill(d.protocol)}</td>
+      <td style="font-family:var(--mono);font-size:10px">${escDiag(d.endpoint)}</td>
+      <td>${st}</td>
+      <td style="font-family:var(--mono);font-size:10px">${vals}</td>
+      <td class="dev-age" style="font-family:var(--mono);font-size:10px">${age}</td></tr>`;
+  }).join('');
+}
+
+function renderDemo(demo){
+  const state=(demo&&demo.state)||'idle';
+  const lbl=document.getElementById('demo-state');
+  lbl.textContent=state;
+  const btn=document.getElementById('demo-btn');
+  btn.disabled=(state==='running');
+  document.getElementById('demo-btxt').textContent=
+    state==='running'?'DEMO RUNNING…':'RUN CROSS-PROTOCOL DEMO';
+  document.getElementById('demo-steps').innerHTML=((demo&&demo.steps)||[]).map(s=>`
+    <div class="demo-step">
+      <span class="st-ic st-${escDiag(s.status)}">${escDiag(s.status)}</span>
+      <div><div class="st-tt">${escDiag(s.title)}</div>
+        <div class="st-dd">${escDiag(s.detail)}</div></div>
+    </div>`).join('');
+  const sum=document.getElementById('demo-summary');
+  if(state==='passed'||state==='failed'){
+    sum.innerHTML=`<div class="demo-summary ${state==='passed'?'ok':'bad'}">
+      ${state==='passed'?'✓':'✗'} ${escDiag((demo&&demo.summary)||state)}</div>`;
+  }else sum.innerHTML='';
+}
+
+async function runDemo(){
+  try{
+    const r=await fetch(SRV+'/api/diagnostics/demo',{method:'POST',mode:'cors',
+      headers:{'Content-Type':'application/json'},body:'{}'});
+    if(!r.ok){const d=await r.json();throw new Error(d.error||('HTTP '+r.status));}
+  }catch(e){alert('Could not start demo: '+e.message);return;}
+  if(demoTimer)clearInterval(demoTimer);
+  demoTimer=setInterval(async()=>{
+    try{
+      const r=await fetch(SRV+'/api/diagnostics/demo',{mode:'cors'});
+      const demo=await r.json();
+      renderDemo(demo);
+      if(demo.state!=='running'){clearInterval(demoTimer);demoTimer=null;}
+    }catch(e){/* transient — next tick retries */}
+  },1000);
 }
 
 /* ── Operations → ROI connected state ──────────────────────────────────────

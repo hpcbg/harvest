@@ -17,7 +17,7 @@ import json
 import sys
 import threading
 import webbrowser
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -47,6 +47,38 @@ except ImportError:
 
 import time
 import uuid
+
+# Live fleet integration layer (Modbus/OPC-UA/FIWARE/ROS) is optional -- the
+# dashboard and batch simulation work without harvest_integrations.
+try:
+    from harvest_integrations import codec as fleet_codec
+    from harvest_integrations.runtime import FleetRuntime
+    from harvest_integrations import diagnostics as fleet_diag
+    _FLEET_AVAILABLE = True
+except ImportError:
+    _FLEET_AVAILABLE = False
+
+# Known API daemons (fiware-sync, ros2-bridge) tag their requests with an
+# X-Harvest-Client header; the diagnostics view reads their last-seen ages.
+_CLIENTS = fleet_diag.ClientRegistry() if _FLEET_AVAILABLE else None
+
+# ── Live fleet runtime ────────────────────────────────────────────────────────
+# Created lazily on the first /api/fleet request, so plain dashboard usage
+# never starts a background fleet; backend comes from integrations.fleet in
+# config.yaml (env override HARVEST_FLEET_BACKEND=sim|devices).
+_FLEET_RUNTIME = None
+_FLEET_LOCK = threading.Lock()
+
+
+def _get_fleet_runtime():
+    global _FLEET_RUNTIME
+    if not _FLEET_AVAILABLE:
+        return None
+    with _FLEET_LOCK:
+        if _FLEET_RUNTIME is None:
+            cfg = load_yaml_with_local(CONFIG_FILE)
+            _FLEET_RUNTIME = FleetRuntime(cfg)
+        return _FLEET_RUNTIME
 
 # ── Operations-run store ──────────────────────────────────────────────────────
 # Single-user local dashboard: retaining only the latest successful Operations run
@@ -249,6 +281,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if _CLIENTS is not None:
+            _CLIENTS.mark(self.headers.get("X-Harvest-Client"))
         path = self.path.split("?")[0]
 
         if path in ("/", "/dashboard.html"):
@@ -273,6 +307,48 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
 
+        elif path == "/api/fleet/snapshot":
+            runtime = _get_fleet_runtime()
+            if runtime is None:
+                self._send_json({"error": "harvest_integrations not available"}, 501)
+            else:
+                try:
+                    self._send_json(fleet_codec.snapshot_to_dict(runtime.snapshot()))
+                except Exception as e:
+                    self._send_json({"error": f"fleet snapshot failed: {e}"}, 500)
+
+        elif path == "/api/fleet/status":
+            runtime = _get_fleet_runtime()
+            if runtime is None:
+                self._send_json({"error": "harvest_integrations not available"}, 501)
+            else:
+                self._send_json(runtime.status())
+
+        elif path == "/api/diagnostics":
+            if not _FLEET_AVAILABLE:
+                self._send_json({"error": "harvest_integrations not available"}, 501)
+            else:
+                try:
+                    runtime = _get_fleet_runtime()
+                    self._send_json(fleet_diag.collect(runtime, _CLIENTS))
+                except Exception as e:
+                    self._send_json({"error": f"diagnostics failed: {e}"}, 500)
+
+        elif path == "/api/diagnostics/demo":
+            if not _FLEET_AVAILABLE:
+                self._send_json({"error": "harvest_integrations not available"}, 501)
+            else:
+                self._send_json(fleet_diag.DEMO.status())
+
+        elif path == "/api/integrations/status":
+            # Status documents pushed by integration daemons (isaac-bridge et
+            # al.) with their ages; read by validation, the FIWARE mirror and
+            # anyone watching the simulator loop.
+            if _CLIENTS is None:
+                self._send_json({"error": "harvest_integrations not available"}, 501)
+            else:
+                self._send_json({"clients": _CLIENTS.statuses()})
+
         elif path == "/health":
             self._send_json({"status": "ok", "config": str(CONFIG_FILE)})
 
@@ -280,12 +356,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
     def do_POST(self):
+        if _CLIENTS is not None:
+            _CLIENTS.mark(self.headers.get("X-Harvest-Client"))
         path = self.path.split("?")[0]
 
         if path == "/simulate":
             self._handle_simulate()
         elif path in ("/api/roi", "/roi"):
             self._handle_roi()
+        elif path == "/api/fleet/command":
+            self._handle_fleet_command()
+        elif path == "/api/diagnostics/demo":
+            self._handle_demo_start()
+        elif path == "/api/integrations/status":
+            self._handle_integrations_status()
         else:
             self._send_json({"error": "unknown endpoint"}, 404)
 
@@ -317,6 +401,70 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             import traceback
             self._send_json({"error": str(e), "trace": traceback.format_exc()}, 500)
+
+    def _handle_fleet_command(self):
+        """POST /api/fleet/command -- actuate the live fleet.
+
+        Body: ``{"commands": [{"type": "...", "target_id": "...", "value": ...}]}``
+        (the schema shared with the FIWARE FarmCommand entity and the ROS 2
+        bridge).  Returns one ack per command.
+        """
+        runtime = _get_fleet_runtime()
+        if runtime is None:
+            self._send_json({"error": "harvest_integrations not available"}, 501)
+            return
+        try:
+            payload = self._read_payload()
+        except Exception as e:
+            self._send_json({"error": f"bad request: {e}"}, 400)
+            return
+        try:
+            commands = fleet_codec.commands_from_payload(payload)
+        except (ValueError, KeyError) as e:
+            self._send_json({"error": f"invalid command payload: {e}"}, 400)
+            return
+        try:
+            acks = runtime.submit(commands)
+            self._send_json(fleet_codec.acks_to_payload(acks))
+        except Exception as e:
+            self._send_json({"error": f"fleet command failed: {e}"}, 500)
+
+    def _handle_demo_start(self):
+        """POST /api/diagnostics/demo — start the cross-protocol demonstration.
+
+        The demo runs on its own thread and drives the fleet only through the
+        generic FleetInterface; poll GET /api/diagnostics/demo for the trace.
+        """
+        runtime = _get_fleet_runtime()
+        if runtime is None:
+            self._send_json({"error": "harvest_integrations not available"}, 501)
+            return
+        if fleet_diag.DEMO.start(runtime):
+            self._send_json({"started": True})
+        else:
+            self._send_json({"error": "demo already running"}, 409)
+
+    def _handle_integrations_status(self):
+        """POST /api/integrations/status — a daemon pushes its status blob.
+
+        Body: ``{"client": "<label>", "status": {...}}``.  Generic by design:
+        the server only stores the document (with a timestamp) in the client
+        registry; what it means is interpreted by the diagnostics collector.
+        """
+        if _CLIENTS is None:
+            self._send_json({"error": "harvest_integrations not available"}, 501)
+            return
+        try:
+            payload = self._read_payload()
+        except Exception as e:
+            self._send_json({"error": f"bad request: {e}"}, 400)
+            return
+        client = payload.get("client") if isinstance(payload, dict) else None
+        if not client or not isinstance(client, str):
+            self._send_json({"error": "missing 'client' label"}, 400)
+            return
+        _CLIENTS.report(client, payload.get("status"))
+        self._send_json({"ok": True})
 
     def _handle_roi(self):
         """POST /api/roi — long-term ROI, based strictly on the latest Operations run."""
@@ -366,10 +514,17 @@ class Handler(BaseHTTPRequestHandler):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-PORT = 8765
+import os
+
+# Bind/port are overridable for container use (Docker binds 0.0.0.0).
+PORT = int(os.environ.get("HARVEST_PORT", "8765"))
+HOST = os.environ.get("HARVEST_HOST", "127.0.0.1")
 
 def main() -> None:
-    server = HTTPServer(("127.0.0.1", PORT), Handler)
+    # Threading so slow endpoints (diagnostics probes, long simulations) never
+    # stall the dashboard's health/diagnostics polling.  All shared state is a
+    # single-user run store + the lock-guarded FleetRuntime.
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
     url    = f"http://localhost:{PORT}"
 
     cfg_str = str(CONFIG_FILE)
@@ -384,8 +539,10 @@ def main() -> None:
 ╚══════════════════════════════════════════════╝
 """)
 
-    # Open browser after 600 ms so the server is ready
-    threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    # Open browser after 600 ms so the server is ready (suppressed in
+    # containers / headless runs via HARVEST_NO_BROWSER=1)
+    if not os.environ.get("HARVEST_NO_BROWSER"):
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
 
     try:
         server.serve_forever()

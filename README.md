@@ -62,17 +62,63 @@ harvest/
 │   ├── validation.py         #   Central input validation + advisory warnings
 │   ├── export.py             #   roi_summary.csv / roi_cashflows.csv / *.json writers
 │   └── __main__.py           #   python -m roi CLI
+├── harvest_integrations/     # External-integration layer (optional; see below)
+│   ├── codec.py              #   Canonical fleet JSON schema (HTTP / FIWARE / ROS share it)
+│   ├── runtime.py            #   Live fleet runtime behind /api/fleet/* (sim | devices)
+│   ├── devices/              #   Protocol abstraction: DeviceIO seam + registry
+│   │   ├── base.py           #     PointSpec / DeviceEndpoint / register_protocol()
+│   │   ├── modbus_io.py      #     Modbus TCP backend (pymodbus)
+│   │   ├── opcua_io.py       #     OPC-UA backend (asyncua.sync)
+│   │   ├── fake_io.py        #     In-memory backend for tests
+│   │   └── fleet_backend.py  #     DeviceFleetInterface (FleetInterface over field devices)
+│   ├── simulators/           #   Farm-device simulator speaking real Modbus + OPC-UA
+│   │   └── isaac/            #     Optional Isaac Sim layer: contract, motion core,
+│   │                         #     GPU-free stub, Isaac standalone app (see its README)
+│   └── fiware/               #   NGSI-LD client, entity mapping, sync daemon
+├── ros2_ws/                  # ROS 2 workspace (built & run inside Docker)
+│   └── src/harvest_ros/      #   fleet_bridge + isaac_bridge nodes + topics/qos contract
+├── docker/                   # Dockerfile (app) + Dockerfile.ros2 (bridge)
+├── docker-compose.yml        # Full stack; profiles: devices / fiware / ros2 / isaac[-demo]
+├── run_harvest_dashboard.sh  # One-command startup (lite|core|devices|fiware|full|isaac…)
+├── validate_harvest_stack.sh # End-to-end validation of the running stack
+├── examples/                 # HTTP / NGSI-LD / DeviceIO / Isaac client examples
+├── scripts/                  #   validate_stack.py, run_isaac_sim.sh (host Isaac launcher)
+├── requirements-integrations.txt  # Optional deps: pymodbus (pinned), asyncua
 └── tests/                    # Unit + integration tests (stdlib unittest)
     ├── test_calculator.py    #   NPV / IRR / payback / ROI primitives
     ├── test_investments.py   #   Diesel litres, PV paired-sim, degradation, double-count
     ├── test_reliability.py   #   Islanding rule, expected-value outage cost
     ├── test_period_runner.py #   Period resolution, seasonality, determinism
-    └── test_integration.py   #   Existing sim preserved + ROI engine end-to-end
+    ├── test_integration.py   #   Existing sim preserved + ROI engine end-to-end
+    ├── test_device_io.py     #   DeviceIO seam, point maps, protocol registry
+    ├── test_fleet_backend.py #   DeviceFleetInterface mapping + command acks
+    ├── test_fleet_codec.py   #   Fleet JSON schema round-trips
+    ├── test_fleet_api.py     #   /api/fleet/* endpoints over live HTTP
+    ├── test_fiware_entities.py #  NGSI-LD mapping + sync engine (stub broker)
+    ├── test_ros_contract.py  #   ROS topic contract (no ROS required)
+    ├── test_isaac_contract.py #  Sim wire contract + shared motion core (no Isaac required)
+    └── test_protocol_integration.py # Live Modbus/OPC-UA loopback (auto-skips)
 ```
 
 ---
 
 ## Quick Start
+
+Two ways to run HARVEST:
+
+* **Docker (one command)** — the dashboard plus the whole external-integration
+  stack (Modbus/OPC-UA device simulator, FIWARE NGSI-LD context broker,
+  optional ROS 2 bridge), reproducible with no host-side setup beyond Docker:
+
+  ```bash
+  ./run_harvest_dashboard.sh          # dashboard + devices + FIWARE
+  ./run_harvest_dashboard.sh lite     # host Python only — original behaviour
+  ```
+
+  See [External Integrations & Docker Deployment](#external-integrations--docker-deployment).
+
+* **Host Python (lightweight)** — the original setup below; nothing about it
+  changed, and none of the integration dependencies are required for it.
 
 ### Clone this repositoy
 git clone https://github.com/hpcbg/harvest.git
@@ -157,6 +203,11 @@ Writes `outputs/roi/roi_summary.csv`, `roi_cashflows.csv`, `roi_assumptions.json
    - **Task status table** — collapsible per-scenario view with phase badges, progress %, tractor assignment, delay reason
 
 [![Task status](./images/task-status.png)](./images/task-status.png)
+
+5. **View tabs** (header): **Operations** (above), **ROI & Investment**
+   (long-term economics) and **Diagnostics** — the operational/debug/demo view
+   of the external-integration stack, described under
+   [Diagnostics view](#diagnostics-view).
 
 ---
 
@@ -467,16 +518,253 @@ iface = SimulationFleetInterface(env=my_pilot6_env, adapters=Adapters(
 
 ### ROS 2 bridge (Stage 3)
 
-`ros2_bridge.py` is a skeleton `rclpy` node that publishes `FleetSnapshot` messages and turns incoming ROS 2 commands into `FleetInterface.submit()` calls. The module imports cleanly with no ROS installation — it degrades to offline/parse-only mode and the simulation demo is unaffected. For the September deployment the backend is swapped for a `Ros2FleetInterface` that subscribes to the real ZETRABOT topics. The only remaining input needed to finalise the message definitions is confirmation of the ZETRABOT signal set.
+A working, containerised ROS 2 bridge now lives in `ros2_ws/src/harvest_ros`
+(see [External Integrations & Docker Deployment](#external-integrations--docker-deployment) — start it with
+`./run_harvest_dashboard.sh full`).  It mirrors the live fleet onto canonical
+`/harvest/*` topics and forwards command messages to the fleet API, so ROS
+never needs to be installed on the host.  Rich objects travel as versioned
+JSON in `std_msgs/String` (custom `harvest_msgs` remain deferred until the
+ZETRABOT signal set is confirmed — the same decision WISEPACK documents for
+its Orion-LD DDS-bridge compatibility).
 
-Proposed topic map:
+`harvest_control/ros2_bridge.py` remains as the in-process skeleton variant
+for a future `Ros2FleetInterface` running *inside* a ROS-native deployment;
+the containerised bridge is the recommended path today.
 
-| Topic / Service | Direction | Type |
+---
+
+## External Integrations & Docker Deployment
+
+The `harvest_integrations` package connects HARVEST to industrial/agricultural
+field devices (Modbus TCP, OPC-UA), to FIWARE (NGSI-LD context broker) and to
+ROS 2 — while keeping HARVEST's semantic device-agent model
+(`harvest_control`) the single authoritative domain model.  Everything in this
+section is **optional**: `python main.py`, `python server.py`, MARL, the
+predictor and ROI run unchanged without any of it.
+
+Architecture (protocol abstraction adapted from TEMPO's adapter seam; Docker
+orchestration, single-command startup and the state-mirror broker pattern
+adapted from WISEPACK):
+
+```
+   external FIWARE apps          ROS 2 nodes / rqt
+        │ NGSI-LD (HTTP)              │ /harvest/* topics (DDS, in-container)
+        v                             v
+  +-----------+   HTTP    +---------------------+
+  | Orion-LD  | <-------- |  fiware-sync daemon |          docker compose
+  | + MongoDB | PATCH cmd |  (mirror + inbound) |          profiles:
+  +-----------+ --------> +----------+----------+            fiware
+                                     │ /api/fleet/*           ros2
+                          +----------+----------+             devices
+                          |  server.py          |
+                          |  FleetRuntime       |
+                          +----------+----------+
+                                     │ FleetInterface (harvest_control)
+                 +-------------------+--------------------+
+                 v                                        v
+     SimulationFleetInterface                DeviceFleetInterface
+     (reference sim, zero deps)              (DeviceIO seam: Modbus / OPC-UA /
+                                              fake / register_protocol(...))
+                                                          │
+                                             farm-sim container *or* real
+                                             chargers, loads, tractor BMS
+```
+
+### One-command startup
+
+```bash
+./run_harvest_dashboard.sh [mode]
+```
+
+| Mode | What runs | Fleet backend |
 |---|---|---|
-| `/harvest/fleet/snapshot` | publish | `harvest_msgs/FleetSnapshot` |
-| `/harvest/command` | service | `harvest_msgs/SubmitCommand` |
-| `/harvest/tractor/{id}/state` | publish | `harvest_msgs/TractorState` |
-| `/harvest/tractor/{id}/cmd` | subscribe | `harvest_msgs/Command` |
+| `lite` | `server.py` on the host, no Docker (original behaviour) | lazy `sim` |
+| `core` | Dashboard/API container only | `sim` |
+| `devices` | + farm-device simulator (real Modbus TCP + OPC-UA on the wire) | `devices` |
+| `fiware` *(default)* | + Orion-LD, MongoDB, NGSI-LD sync daemon | `devices` |
+| `full` | + ROS 2 fleet bridge (`ros:jazzy`, DDS stays in-container) | `devices` |
+| `isaac` | fiware + fleet & Isaac bridges on the **host network**, so a host-run NVIDIA Isaac Sim joins over DDS (start it with `./scripts/run_isaac_sim.sh`) | `devices` |
+| `isaac-demo` | isaac + a GPU-free simulator stand-in — the full HARVEST→ROS 2→simulator loop with no Isaac install | `devices` |
+
+`./run_harvest_dashboard.sh stop` tears everything down; `status` and
+`logs [service]` are also available.  After every successful start the
+launcher prints (and, if the stack is already up, re-prints) the
+`HARVEST is up` summary box with the dashboard URL and the stop/logs/validate
+commands.  Then validate the running stack end-to-end (exit code = number of
+failed checks):
+
+```bash
+./validate_harvest_stack.sh
+```
+
+### Live fleet API
+
+`server.py` gains three endpoints (created lazily — plain dashboard usage
+starts no background fleet):
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/fleet/snapshot` | Current fleet state as `harvest-fleet/1.0` JSON |
+| `POST /api/fleet/command` | `{"commands": [{"type": "shed_load", "target_id": "...", "value": ...}]}` → one ack per command |
+| `GET /api/fleet/status` | Active backend (`sim` \| `devices`) |
+
+The same JSON schema (`harvest_integrations/codec.py`) is used on the FIWARE
+command entity and the ROS topics, so the three transports cannot drift apart.
+
+### Device / protocol abstraction (Modbus, OPC-UA)
+
+`harvest_integrations/devices` adapts TEMPO's `CellIO` pattern: the single
+seam is `DeviceIO` (`read() -> {point: value}`, `write(point, value)`), and
+*where* a point lives on the wire is configuration (`PointSpec`: register
+address / node name, scale, writability), not code.  Protocol backends are
+looked up in a registry:
+
+```python
+from harvest_integrations.devices import register_protocol
+register_protocol("mqtt", MyMqttDeviceIO.from_endpoint)   # no core changes
+```
+
+`DeviceFleetInterface` composes one `DeviceIO` per endpoint into the standard
+`FleetInterface` contract — the decision layer cannot tell it apart from the
+simulation.  Device identity/count derive from `config.yaml`'s existing
+`tractors.fleet` / `charging.stations` / `energy_consumers` sections; hosts
+and ports live under `integrations.fleet` (env overrides
+`HARVEST_FLEET_BACKEND`, `HARVEST_MODBUS_HOST`, `HARVEST_MODBUS_PORT`,
+`HARVEST_OPCUA_ENDPOINT`).
+
+The bundled simulator (`python -m harvest_integrations.simulators.farm_sim`)
+serves **both protocols from one farm state** — chargers/loads/grid meter as
+Modbus holding registers, tractor BMS as OPC-UA nodes — so a charge request
+written over OPC-UA becomes charger power on the Modbus side within a tick.
+Register/node maps are documented in
+`harvest_integrations/simulators/modbus_server.py` and `opcua_server.py`.
+
+### FIWARE / NGSI-LD
+
+The `fiware-sync` daemon mirrors each fleet snapshot into Orion-LD as NGSI-LD
+entities (SAREF-aligned, documented in `harvest_integrations/fiware/entities.py`):
+
+| Entity | Content |
+|---|---|
+| `urn:ngsi-ld:ElectricTractor:<id>` | SoC, energy, availability, charging/V2L state, position |
+| `urn:ngsi-ld:ChargingStation:<id>` | level, power, occupancy |
+| `urn:ngsi-ld:EnergyConsumer:<id>` | name, shed state, power |
+| `urn:ngsi-ld:FarmEnergySystem:main` | grid draw/cap, PV, tariff, price |
+| `urn:ngsi-ld:FarmCommand:main` | **inbound**: `command` attr; `lastNonce`/`lastResult` write-back |
+| `urn:ngsi-ld:FarmSimulation:isaac` | optional Isaac Sim layer: simulator kind/state, synced entities (mirrored only while its bridge is alive) |
+
+Telemetry attributes carry `observedAt` and `unitCode`; the broker holds
+*current state*, not history.  External systems actuate the farm by PATCHing
+the command entity:
+
+```bash
+curl -X PATCH http://localhost:1026/ngsi-ld/v1/entities/urn:ngsi-ld:FarmCommand:main/attrs \
+  -H 'Content-Type: application/json' \
+  -d '{"command": {"type": "Property", "value":
+        "{\"nonce\": \"n42\", \"commands\": [{\"type\": \"shed_load\", \"target_id\": \"workshop_tools\"}]}"}}'
+```
+
+The daemon receives it via an NGSI-LD subscription (plus a polling fallback
+that survives broker-cannot-reach-daemon topologies), forwards it to
+`POST /api/fleet/command`, and writes the acks back into `lastResult`.
+Replays are suppressed by nonce.  The broker never touches HARVEST state
+directly.
+
+### ROS 2 topics (`full` mode)
+
+| Topic | Type | QoS |
+|---|---|---|
+| `/harvest/fleet/snapshot` | `String` (fleet JSON) | reliable, latched |
+| `/harvest/fleet/command` | `String` (command JSON, inbound) | reliable |
+| `/harvest/fleet/ack` | `String` (acks) | reliable, latched |
+| `/harvest/grid/draw_kw`, `/harvest/grid/pv_kw`, `/harvest/grid/price_eur_per_kwh` | `Float32` | best-effort |
+| `/harvest/grid/tariff` | `String` | reliable, latched |
+| `/harvest/tractors/<id>/soc_pct` | `Float32` | best-effort |
+
+The bridge (`ros2_ws/src/harvest_ros`) needs only `rclpy` + `std_msgs` and
+talks to HARVEST over HTTP, so the coupling is one-way and fully
+containerised — plain `ros:jazzy-ros-base`, no Vulcanexus requirement.
+
+### Isaac Sim (optional physical/3D layer)
+
+NVIDIA Isaac Sim can act as an optional physical simulation layer for
+entities HARVEST already models — tractors driving to chargers, docking,
+charger activity — following WISEPACK's proven Isaac architecture adapted to
+farm mobility.  HARVEST remains authoritative for energy management,
+scheduling and semantic state; the simulator only *executes/visualises*
+physical behaviour and reports the measured result back:
+
+```text
+HARVEST agents / scheduler → FleetInterface/DeviceIO → ROS 2 → Isaac bridge
+      → Isaac Sim (host) or GPU-free stub — telemetry flows back the same way
+```
+
+```bash
+./run_harvest_dashboard.sh isaac-demo   # whole loop, no GPU/Isaac needed
+./run_harvest_dashboard.sh isaac        # + start Isaac: ./scripts/run_isaac_sim.sh
+python3 examples/isaac_sim_demo.py      # command a charge, watch the tractor drive & dock
+```
+
+Isaac Sim itself runs **on the host, never in Docker** (its bundled Python +
+GPU stack); the `isaac` profile puts the two bridge nodes on the host network
+because Fast DDS discovery does not cross a bridged Docker network.  The wire
+contract (`harvest-sim/1.0`, two latched JSON topics `/harvest/sim/command` /
+`/harvest/sim/telemetry`), the shared motion core and the full demonstrator
+walkthrough are documented in
+[`harvest_integrations/simulators/isaac/README.md`](harvest_integrations/simulators/isaac/README.md).
+The Isaac bridge pushes its state to `POST /api/integrations/status`
+(readable at `GET /api/integrations/status`), which feeds the Diagnostics
+`Isaac Sim` component and the `FarmSimulation` NGSI-LD mirror.  Computer
+vision and manipulation are deliberately out of scope.
+
+### Diagnostics view
+
+The dashboard's **Diagnostics** tab (modelled on WISEPACK's diagnostics page)
+is the operational/debug/demo surface for everything in this section — served
+by `GET /api/diagnostics`, read-only and allowlisted (no environment dumps, no
+Docker socket).
+
+* **Service health** — HARVEST API, fleet backend, Modbus/OPC-UA adapters,
+  Orion-LD, MongoDB, FIWARE sync, the ROS 2 bridge and the Isaac Sim layer,
+  each in one of five
+  honest states: `healthy`, `simulated` (deliberate simulation never reads as
+  a failure), `inactive` (optional component not started — with the launcher
+  command that starts it), `failed` (expected but not answering), `unknown`.
+  The sync daemon and ROS bridge are detected from their own API polling (an
+  `X-Harvest-Client` header), so "running container" is never confused with
+  "actually working".  The `Isaac Sim` card distinguishes: not enabled
+  (`inactive`, optional), bridge up but waiting for a simulator (`inactive`,
+  with the start command), the GPU-free stand-in (`simulated`), real Isaac
+  connected (`healthy` — with sim state, synced entity count and telemetry
+  age), and a lost connection or simulator error (`failed`).
+* **Devices** — one row per endpoint from the `DeviceIO` layer: protocol,
+  connection target, reachability, latest values and their age.  In `sim`
+  mode the same rows appear tagged `sim`.
+* **Cross-protocol demonstration** — a scripted, observable proof of the
+  abstraction (button in the sidebar, or `POST /api/diagnostics/demo`):
+  a charge command is issued through the generic fleet interface (written via
+  **OPC-UA** to the tractor BMS in devices mode), the resulting charger power
+  and grid-draw change are read back via the **Modbus** grid meter, and the
+  same state change is shown mirrored as **NGSI-LD** in Orion-LD when the
+  fiware profile is up (the step reports `skip` when it isn't).  The UI never
+  touches a protocol — it only renders the server-side trace.
+
+`./validate_harvest_stack.sh` runs the same demonstration headlessly as part
+of the end-to-end validation, and — when a simulator is connected (`isaac` /
+`isaac-demo` modes) — the physical charge loop as well: a charge command
+issued over the fleet API must end with the simulator reporting the tractor
+physically docked at its charger.
+
+### Examples & tests
+
+Client examples live in `examples/` (HTTP, NGSI-LD, direct `DeviceIO`).  All
+integration-layer tests are stdlib `unittest` and run with the rest of the
+suite:
+
+```bash
+python -m unittest discover tests            # protocol tests auto-skip
+pip install -r requirements-integrations.txt # enables live Modbus/OPC-UA loopback tests
+```
 
 ---
 
@@ -893,6 +1181,12 @@ roi:                         # long-term ROI & investment economics — see the
 
 ## Architecture (Target)
 
+> **Status:** the FIWARE NGSI-LD broker layer (T3.1) and a containerised ROS 2
+> interface (T3.2 northbound) are now implemented — see
+> [External Integrations & Docker Deployment](#external-integrations--docker-deployment).
+> The diagram below remains the Stage 3 target picture (FIROS2/ZETRABOT
+> hardware topics, PPO agents, BLE mesh).
+
 ```
                     +-------------------------------------+
                     |         FIWARE NGSI-LD Broker        |  <- T3.1
@@ -935,13 +1229,19 @@ roi:                         # long-term ROI & investment economics — see the
 Python >= 3.10
 numpy, scipy, pyyaml, pandas, matplotlib   # core (always required)
 tensorflow                                  # only for nn predictor backend
+pymodbus (pinned 3.6.9), asyncua            # only for the Modbus/OPC-UA device
+                                            # backend & farm simulator
 ```
 
 ```bash
 pip install -r requirements.txt
+pip install -r requirements-integrations.txt   # optional — device backend only
 ```
 
-No cloud services or API keys required (except the optional `openmeteo` backend for live weather forecasts).
+The Docker stack (`./run_harvest_dashboard.sh`) needs only Docker + Compose on
+the host; all Python, FIWARE and ROS 2 dependencies stay inside the
+containers.  No cloud services or API keys required (except the optional
+`openmeteo` backend for live weather forecasts).
 
 ---
 

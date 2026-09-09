@@ -1,0 +1,10 @@
+# HARVEST — optional external-integration dependencies
+# Needed only for the Modbus/OPC-UA device backend and the bundled farm
+# simulator; the FIWARE layer is standard-library only.
+# Install with: pip install -r requirements-integrations.txt
+
+# Pinned like TEMPO: pymodbus 3.14+ is mid-migration to a new datastore API.
+pymodbus==3.6.9
+
+# OPC-UA client + server (asyncua.sync facade keeps callers synchronous).
+asyncua>=1.0

@@ -432,3 +432,40 @@ roi:
   sensitivity:
     enabled: true
     variation_pct: 20.0
+
+# ── External integrations (Modbus/OPC-UA devices, FIWARE, ROS 2) ──────────────
+# Everything below is OPTIONAL: the simulator, dashboard, MARL, predictor and
+# ROI layers run unchanged without it.  The live fleet is exposed by server.py
+# under /api/fleet/* and consumed by the FIWARE sync daemon and the ROS 2
+# bridge (see docker-compose.yml and README "External integrations").
+integrations:
+  fleet:
+    # Live fleet backend (env override HARVEST_FLEET_BACKEND):
+    #   sim     — built-in reference simulation, zero extra dependencies
+    #   devices — real Modbus TCP / OPC-UA clients (pip install -r
+    #             requirements-integrations.txt), talking to hardware or to
+    #             the bundled farm simulator
+    #             (python -m harvest_integrations.simulators.farm_sim)
+    backend: sim
+    # sim backend only: simulated minutes advanced per real second (1.0
+    # matches the farm simulator's default 60x speedup).
+    sim_minutes_per_s: 1.0
+    # devices backend: where the Modbus (chargers/loads/grid meter) and
+    # OPC-UA (tractor BMS) endpoints live.  Device identity and count are
+    # derived from tractors.fleet / charging.stations / energy_consumers
+    # above — this file stays the single source of farm structure.
+    # Env overrides: HARVEST_MODBUS_HOST/HARVEST_MODBUS_PORT/HARVEST_OPCUA_ENDPOINT.
+    modbus_host: 127.0.0.1
+    modbus_port: 5020
+    opcua_endpoint: opc.tcp://127.0.0.1:4840/harvest/
+    # Additional devices with explicit protocol + point maps (any protocol
+    # registered via harvest_integrations.devices.register_protocol):
+    #   - id: soil_station_1
+    #     kind: load
+    #     protocol: modbus
+    #     host: 10.0.0.9
+    #     port: 5020
+    #     points:
+    #       power_kw: {address: 300, scale: 0.1}
+    #       shed:     {address: 301, writable: true}
+    custom_devices: []

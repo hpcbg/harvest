@@ -1,0 +1,16 @@
+# HARVEST ROS 2 bridge image
+# ===========================
+# Plain ros:jazzy-ros-base (not Vulcanexus): the bridge reaches HARVEST over
+# HTTP and FIWARE sync is HTTP-based too, so nothing here depends on the
+# Orion-LD DDS Enabler that forces WISEPACK onto Vulcanexus.  ros-base already
+# ships colcon (ros-dev-tools).
+#
+# The workspace is bind-mounted at /harvest and colcon-built incrementally at
+# container start (see docker-compose.yml), so the image is dependency-only.
+FROM ros:jazzy-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /harvest
+
+CMD ["/bin/bash"]

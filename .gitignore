@@ -62,6 +62,13 @@ config.local.yaml
 # HARVEST — generated outputs and caches
 outputs/
 pv_weather_cache.json
+__pycache__/
+
+# HARVEST — ROS 2 workspace build artefacts (built out-of-tree in Docker,
+# but ignore local colcon runs too)
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
 
 # Keep tracked exceptions
 !images/*.png

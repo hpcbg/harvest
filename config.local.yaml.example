@@ -30,6 +30,16 @@ prediction:
 #     latitude: 41.69
 #     longitude: 23.31
 
+# Example: point the live fleet at real field devices instead of the sim
+# backend (see README "External integrations"; requires
+# pip install -r requirements-integrations.txt)
+# integrations:
+#   fleet:
+#     backend: devices
+#     modbus_host: 192.168.1.50
+#     modbus_port: 502
+#     opcua_endpoint: opc.tcp://192.168.1.60:4840/harvest/
+
 # ── ROI & Investment — DEMONSTRATION assumptions ───────────────────────────────
 # The values below are ILLUSTRATIVE placeholders to make the ROI dashboard show
 # non-trivial numbers out of the box.  They are NOT commercial quotations or
