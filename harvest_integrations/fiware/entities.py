@@ -125,14 +125,26 @@ def simulation_entity(status: Dict[str, Any],
     """Mirror of the optional Isaac Sim layer's state.
 
     ``status`` is the isaac-bridge document from
-    ``GET /api/integrations/status`` (its ``status`` field).  Only summary
-    physical-simulation state is mirrored — per-entity live poses stay on the
-    HARVEST/ROS side; the broker reflects that a simulator is (or is not)
-    executing the fleet's physical behaviour.
+    ``GET /api/integrations/status`` (its ``status`` field).
+
+    WHAT IS AND IS NOT MIRRORED.  Summary state and the physical OUTCOME per
+    tractor — which state each one is physically in, and which are docked — but
+    not the live pose stream.  A pose at 2 Hz is telemetry, and a context broker
+    is not a telemetry bus: mirroring it would rewrite this entity on every
+    frame for no consumer's benefit, and the live values are already on the
+    HARVEST/ROS side (``/api/integrations/status`` and the Diagnostics view).
+    What an NGSI-LD consumer needs is the semantic answer -- *did the tractor
+    physically arrive* -- which is exactly ``dockedTractors``.
     """
     ts = observed_at or _now_iso()
     sim = (status or {}).get("simulator") or {}
-    return {
+    entities = sim.get("entities") or {}
+    tractors = {eid: row for eid, row in entities.items()
+                if isinstance(row, dict) and row.get("kind") == "tractor"}
+    physical_states = {eid: str(row.get("physical_state") or "unknown")
+                       for eid, row in sorted(tractors.items())}
+    docked = sorted(eid for eid, row in tractors.items() if row.get("docked"))
+    entity = {
         "id": SIMULATION_ENTITY_ID,
         "type": "FarmSimulation",
         "connected": _prop(bool(sim.get("connected")), ts),
@@ -141,7 +153,21 @@ def simulation_entity(status: Dict[str, Any],
         "entitiesSynced": _prop(int(sim.get("entities_synced") or 0), ts),
         "sceneFingerprint": _prop(str(sim.get("scene_fingerprint") or ""), ts),
         "sceneAcknowledged": _prop(bool(sim.get("scene_acknowledged")), ts),
+        # The physical outcome, which is the part HARVEST did not compute.
+        "tractorsSynced": _prop(len(tractors), ts),
+        "physicalStates": _prop(physical_states, ts),
+        "dockedTractors": _prop(docked, ts),
     }
+    model = sim.get("robot_model") or {}
+    if model.get("id"):
+        # Which body is standing in for a tractor, so a consumer can tell a
+        # proxy demonstration from a run against the real vehicle model.
+        entity["robotModel"] = _prop(str(model["id"]), ts)
+    view = sim.get("visualization") or {}
+    if view:
+        entity["liveViewAvailable"] = _prop(
+            view.get("state") == "serving", ts)
+    return entity
 
 
 def command_entity() -> Dict[str, Any]:

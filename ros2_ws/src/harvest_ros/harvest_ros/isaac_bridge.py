@@ -148,10 +148,37 @@ class HarvestIsaacBridge(Node):
                 "detail": sim.get("detail"),
                 "telemetry_age_s": round(age, 1),
                 "entities_synced": stats.get("entities_synced", 0),
+                "tractors_synced": stats.get("tractors_synced"),
+                "tractors_driveable": stats.get("tractors_driveable"),
                 "sim_time_s": stats.get("sim_time_s"),
                 "entities": self._last_telemetry.get("entities") or {},
+                # Passed through verbatim, never interpreted here: how the
+                # operator can watch the simulation, which robot model is
+                # standing in for a tractor, and anything the simulator is
+                # unhappy about.  Diagnostics renders them; the bridge has no
+                # opinion about any of it.
+                "visualization": sim.get("visualization") or {},
+                "robot_model": sim.get("robot_model") or {},
+                "physics": sim.get("physics"),
+                "problems": sim.get("problems") or [],
             })
         return view
+
+    def _ros_view(self) -> dict:
+        """The DDS facts an operator needs when the two sides cannot see each
+        other -- which is the failure this integration actually has.
+
+        Reported from THIS process's environment, because that is the half of
+        the pair HARVEST controls; the simulator reports its own in telemetry.
+        A domain or transport mismatch between the two is invisible from either
+        side alone and is the first thing to check.
+        """
+        return {
+            "domain_id": os.environ.get("ROS_DOMAIN_ID", "0"),
+            "rmw": os.environ.get("RMW_IMPLEMENTATION", "<default>"),
+            "transport": os.environ.get("FASTDDS_BUILTIN_TRANSPORTS",
+                                        "<Fast DDS default>"),
+        }
 
     def _report_status(self) -> None:
         payload = {
@@ -159,6 +186,7 @@ class HarvestIsaacBridge(Node):
             "status": {
                 "bridge_uptime_s": round(time.time() - self._started, 1),
                 "scene_ready": self._scene is not None,
+                "ros": self._ros_view(),
                 "simulator": self._simulator_view(),
             },
         }

@@ -172,6 +172,18 @@ services:
       # Same RMW as scripts/run_isaac_sim.sh pins for Isaac -- different RMWs
       # simply never discover each other (WISEPACK finding).
       RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      # UDPv4 ONLY, and this is a measured fix, not a preference.  Fast DDS
+      # prefers SHARED MEMORY between participants on one host.  Isaac runs on
+      # the host as the invoking user; this container runs as root with
+      # `ipc: host`, so its SHM segments are root-owned mode 0644 and the host
+      # user cannot map them read-write.  Fast DDS does NOT fall back to UDP for
+      # a pair already matched on a SHM locator, so discovery succeeds --
+      # `ros2 topic list` shows /harvest/sim/telemetry -- and not one sample is
+      # ever delivered.  Measured here (host Isaac rclpy <-> this image, domain
+      # 42, both Fast DDS 2.14.6): default transports = topic visible, echo
+      # times out; UDPv4 = works.  scripts/run_isaac_sim.sh pins the same value,
+      # and the two MUST agree -- see the long note there.
+      FASTDDS_BUILTIN_TRANSPORTS: ${HARVEST_DDS_TRANSPORT:-UDPv4}
       COLCON_LOG_PATH: /tmp/ros_log
       HARVEST_REPO_ROOT: /harvest
     command:
@@ -206,6 +218,9 @@ services:
     environment:
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
       RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      # The same transport pin as ros2-bridge-isaac: both ends of a DDS pair
+      # must agree, and the stub shares the isaac profile's host network.
+      FASTDDS_BUILTIN_TRANSPORTS: ${HARVEST_DDS_TRANSPORT:-UDPv4}
       PYTHONPATH: /harvest
     command:
       - bash

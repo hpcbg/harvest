@@ -367,10 +367,98 @@ def _isaac_row(clients: ClientRegistry) -> tuple[str, str, str, Dict[str, Any]]:
               f"telemetry {sim.get('telemetry_age_s', 0):.0f}s ago")
     if not sim.get("scene_acknowledged"):
         detail += ", scene not yet acknowledged"
+    extra["facts"] = _isaac_facts(sim, status.get("ros") or {})
     if sim.get("state") == "error":
         return (name, FAILED, f"{kind} reported an error — {detail}", extra)
     # A stand-in must read as deliberate simulation, never as a live Isaac.
     return (name, SIMULATED if kind == "stub" else HEALTHY, detail, extra)
+
+
+#: How many tractors get their own line before the list is summarised.  This is
+#: an OPERATIONAL diagnostics view, not a simulation monitor: enough to see that
+#: the fleet is synchronised and what the one interesting tractor is doing, and
+#: no more.
+_ISAAC_FACT_TRACTORS = 6
+
+
+def _isaac_facts(sim: Dict[str, Any], ros: Dict[str, Any]) -> List[str]:
+    """A handful of short lines about the live simulation.
+
+    Everything here is REPORTED by the simulator and the bridge; nothing is
+    inferred or recomputed, so a line that disagrees with HARVEST's own view is
+    a real disagreement worth seeing rather than a rendering artefact.
+    """
+    facts: List[str] = []
+
+    model = sim.get("robot_model") or {}
+    if model:
+        size = ""
+        if model.get("length_m") and model.get("width_m"):
+            size = f", {model['length_m']:.2g}×{model['width_m']:.2g} m"
+        facts.append(f"model: {model.get('id', '?')} "
+                     f"({model.get('provider', '?')}{size})")
+    if sim.get("physics"):
+        facts.append(f"physics: {sim['physics']}")
+
+    view = sim.get("visualization") or {}
+    if view.get("state") == "serving" and view.get("viewer_url"):
+        facts.append(
+            f"WebRTC: enabled, {view['viewer_url']} "
+            f"({view.get('signal_port', '?')}/TCP + "
+            f"{view.get('stream_port', '?')}/UDP) — open it with the NVIDIA "
+            "Isaac Sim WebRTC Streaming Client")
+    elif view.get("state") == "failed":
+        facts.append(f"WebRTC: FAILED — {view.get('detail', 'no detail')}")
+    elif view:
+        facts.append("WebRTC: not enabled "
+                     "(HARVEST_ISAAC_VIEW_MODE=webrtc to stream)")
+
+    if ros:
+        facts.append(
+            f"ROS 2/DDS: connected, domain {ros.get('domain_id', '?')}, "
+            f"{ros.get('rmw', '?')}, transport {ros.get('transport', '?')}")
+
+    synced = sim.get("tractors_synced")
+    driveable = sim.get("tractors_driveable")
+    if synced is not None:
+        run = ("running" if sim.get("state") == "running"
+               else str(sim.get("state") or "?"))
+        facts.append(
+            f"simulation: {run}, {synced} tractor(s) synchronised"
+            + (f", {driveable} driveable" if driveable is not None else "")
+            + (f", sim time {sim['sim_time_s']:.0f}s"
+               if isinstance(sim.get("sim_time_s"), (int, float)) else ""))
+
+    entities = sim.get("entities") or {}
+    tractors = [(eid, row) for eid, row in sorted(entities.items())
+                if isinstance(row, dict) and row.get("kind") == "tractor"]
+    for eid, row in tractors[:_ISAAC_FACT_TRACTORS]:
+        pose = row.get("pose") or [0.0, 0.0]
+        line = (f"{eid}: {row.get('physical_state', '?')} at "
+                f"({pose[0]:.1f}, {pose[1]:.1f})")
+        if isinstance(row.get("heading_deg"), (int, float)):
+            line += f" hdg {row['heading_deg']:.0f}°"
+        if isinstance(row.get("speed_mps"), (int, float)):
+            line += f" {row['speed_mps']:.1f} m/s"
+        charger = row.get("docked_charger")
+        if charger:
+            distance = row.get("distance_to_charger_m")
+            line += (f" → {charger}"
+                     + (f" {distance:.1f} m" if isinstance(distance, (int, float))
+                        else ""))
+            line += ", docked" if row.get("docked") else ", approaching"
+        elif row.get("destination"):
+            destination = row["destination"]
+            line += f" → ({destination[0]:.1f}, {destination[1]:.1f})"
+        if row.get("error"):
+            line += f" — {row['error']}"
+        facts.append(line)
+    if len(tractors) > _ISAAC_FACT_TRACTORS:
+        facts.append(f"… and {len(tractors) - _ISAAC_FACT_TRACTORS} more tractor(s)")
+
+    for problem in (sim.get("problems") or [])[:3]:
+        facts.append(f"problem: {problem}")
+    return facts
 
 
 # --------------------------------------------------------------------------- #

@@ -35,8 +35,17 @@ Telemetry (simulator -> bridge), published periodically::
      "scene_fingerprint": str,       # acknowledges the applied scene
      "entities": {id: {"kind": ..., "pose": [x,y], "heading_deg": float,
                        "moving": bool, "docked": bool,
+                       "physical_state": one of PHYSICAL_STATES,
                        "distance_to_target_m": float}},
      "stats": {"entities_synced": int, "sim_time_s": float}}
+
+Both simulators fill the fields above.  The Isaac backend adds measured
+physical detail the stand-in has no notion of -- ``speed_mps``,
+``distance_to_charger_m``, ``destination``, ``driveable`` -- and its
+``simulator`` block carries ``visualization`` (how to watch it),
+``robot_model`` (which body is standing in for a tractor) and ``physics``.
+Every one of those is OPTIONAL by design: a reader must work with the
+stand-in's smaller message, and Diagnostics is written to do exactly that.
 
 The scene fingerprint is acknowledged from the *applied* scene, never echoed
 from the request (WISEPACK: an echoed acknowledgement is a tautology).
@@ -68,6 +77,24 @@ BRIDGE_CLIENT = "isaac-bridge"
 # Physical defaults for the field plane (config coordinates are metres).
 DEFAULT_SPEED_MPS = 4.0        # believable for a farm tractor, demo-friendly
 DEFAULT_DOCK_RADIUS_M = 1.5    # "docked" when within this radius of a charger
+
+#: The physical-state vocabulary, defined HERE because both simulators put it on
+#: the wire and Diagnostics renders it: one word for what the physics is doing.
+#: It is deliberately NOT HARVEST's operational state -- HARVEST derives that
+#: from its own model, and a disagreement between the two is a fact an operator
+#: needs to see rather than something either side should paper over.
+PHYSICAL_STATES = ("parked", "moving", "docked", "charging")
+
+
+def physical_state(*, moving: bool, docked: bool, charging: bool) -> str:
+    """One word for what a tractor is physically doing.  See PHYSICAL_STATES."""
+    if charging and docked:
+        return "charging"
+    if docked:
+        return "docked"
+    if moving:
+        return "moving"
+    return "parked"
 
 
 # --------------------------------------------------------------------------- #

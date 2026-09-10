@@ -179,6 +179,12 @@
     .diag-card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);padding:11px 13px}
     .diag-card .dn{font-size:12px;font-weight:600;color:var(--text2);display:flex;justify-content:space-between;align-items:center;gap:8px}
     .diag-card .dd{font-size:11px;color:var(--text3);margin-top:5px;line-height:1.45;word-break:break-word}
+    /* Optional per-service facts: a few short reported lines (the Isaac Sim row
+       uses them for the live simulation state).  Monospace and dim on purpose —
+       this stays an operational view, not a simulation monitor. */
+    .diag-card .dfacts{margin-top:7px;padding-top:6px;border-top:1px solid var(--border);
+      font-family:var(--mono);font-size:10px;color:var(--text3);line-height:1.6}
+    .diag-card .dfacts div{white-space:pre-wrap;word-break:break-word}
     .dstate{font-size:9px;font-family:var(--mono);padding:2px 7px;border-radius:10px;font-weight:700;text-transform:uppercase;white-space:nowrap}
     .ds-healthy{background:var(--green-lt);color:var(--green)}
     .ds-simulated{background:var(--amber-lt);color:var(--amber)}
@@ -926,12 +932,20 @@ async function fetchDiag(){
 }
 
 function renderDiagServices(services){
-  document.getElementById('diag-services').innerHTML=services.map(s=>`
+  document.getElementById('diag-services').innerHTML=services.map(s=>{
+    // `facts` is optional and generic: any service may report a few short
+    // lines, and the UI never interprets them.  Read-only, escaped, capped.
+    const facts=Array.isArray(s.facts)?s.facts.slice(0,12):[];
+    const factsHtml=facts.length
+      ?`<div class="dfacts">${facts.map(f=>`<div>${escDiag(f)}</div>`).join('')}</div>`
+      :'';
+    return `
     <div class="diag-card">
       <div class="dn">${escDiag(s.name)}
         <span class="dstate ds-${escDiag(s.state)}">${escDiag(s.state)}</span></div>
       <div class="dd">${escDiag(s.detail)}</div>
-    </div>`).join('');
+      ${factsHtml}
+    </div>`;}).join('');
 }
 
 function protoPill(p){

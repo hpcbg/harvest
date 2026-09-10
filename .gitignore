@@ -58,6 +58,9 @@ models/
 
 # HARVEST — local overrides (machine-specific, never committed)
 config.local.yaml
+# KEY=VALUE file read (allowlisted, never sourced) by scripts/run_isaac_sim.sh:
+# ISAAC_SIM_ROOT, ROS_DOMAIN_ID, HARVEST_ISAAC_HEADLESS
+config.local.env
 
 # HARVEST — generated outputs and caches
 outputs/

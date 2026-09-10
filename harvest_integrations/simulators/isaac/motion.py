@@ -1,16 +1,21 @@
 """
-Field kinematics shared by the Isaac Sim app and the GPU-free stub.
+Field kinematics for the GPU-free stand-in simulator (``isaac-demo``).
 
-Pure stdlib, no ROS, no Isaac: the same ``FieldKinematics`` instance drives
-the transforms of Isaac prims on the host and the stub's virtual entities in
-the container, so ``isaac-demo`` validates the exact motion/docking logic the
-real simulator runs (the reason the stub exists at all).
+Pure stdlib, no ROS, no Isaac, no GPU: this is what lets the whole
+HARVEST -> ROS 2 -> simulator -> HARVEST loop be exercised on any machine.
 
-Physical model, deliberately simple for the first demonstrator: tractors
-drive straight toward their goal target at a constant speed and count as
-*docked* when a charger is assigned and they are within the dock radius of
-it.  Chargers are static.  Richer agricultural behaviour (paths, implements,
-terrain) slots in here later without touching the contract or the bridge.
+IT IS NOT WHAT ISAAC RUNS, and the difference is deliberate.  Here a tractor
+INTERPOLATES toward its goal: it slides in a straight line at a constant speed
+and counts as *docked* when a charger is assigned and it is within the dock
+radius.  In Isaac the same tractor is a PhysX articulation that has to turn its
+wheels, accelerate, steer and brake (see ``robots.py``), so it takes a curved
+path, overshoots slightly and settles.  Both report the same wire contract and
+the same physical-state vocabulary, and Diagnostics always says which one is
+connected -- ``simulated`` for this, ``healthy`` for Isaac -- because a
+stand-in must never read as the real thing.
+
+What this module is good for: the contract, the goal handling, the docking
+predicate and the whole bridge round-trip, none of which need a GPU.
 """
 from __future__ import annotations
 
@@ -19,7 +24,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from .contract import DEFAULT_DOCK_RADIUS_M, DEFAULT_SPEED_MPS
+from .contract import DEFAULT_DOCK_RADIUS_M, DEFAULT_SPEED_MPS, physical_state
 
 
 @dataclass
@@ -139,12 +144,18 @@ class FieldKinematics:
                 "pose": [round(ent.pose[0], 2), round(ent.pose[1], 2)],
             }
             if ent.kind == "tractor":
+                docked = self._docked(ent)
                 row.update({
                     "heading_deg": round(ent.heading_deg, 1),
                     "moving": ent.moving,
-                    "docked": self._docked(ent),
+                    "docked": docked,
                     "docked_charger": ent.docked_charger,
                     "charging": ent.charging,
+                    # The same vocabulary the Isaac backend reports, from the
+                    # one definition in contract.py, so Diagnostics reads a
+                    # stand-in run and a real one the same way.
+                    "physical_state": physical_state(
+                        moving=ent.moving, docked=docked, charging=ent.charging),
                     "distance_to_target_m": round(self.distance_to_target(ent), 2),
                 })
             else:

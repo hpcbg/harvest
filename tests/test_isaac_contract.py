@@ -172,5 +172,55 @@ class TestFieldKinematics(unittest.TestCase):
         self.assertIsNotNone(parsed)
 
 
+
+class TestPhysicalStateVocabulary(unittest.TestCase):
+    """One vocabulary for both simulators, defined in the contract.
+
+    Diagnostics, the NGSI-LD mirror and the Isaac backend all render this word,
+    so a second definition anywhere would let a stand-in run and a real run
+    describe the same situation differently.
+    """
+
+    def test_words_are_the_declared_set(self):
+        for moving in (False, True):
+            for docked in (False, True):
+                for charging in (False, True):
+                    self.assertIn(
+                        contract.physical_state(moving=moving, docked=docked,
+                                                charging=charging),
+                        contract.PHYSICAL_STATES)
+
+    def test_charging_requires_being_docked(self):
+        # HARVEST may report a tractor as charging the instant it assigns a
+        # charger; physically it is still driving there, and saying "charging"
+        # then would hide exactly the thing Isaac exists to show.
+        self.assertEqual(
+            contract.physical_state(moving=True, docked=False, charging=True),
+            "moving")
+        self.assertEqual(
+            contract.physical_state(moving=False, docked=True, charging=True),
+            "charging")
+
+    def test_docked_beats_parked(self):
+        self.assertEqual(
+            contract.physical_state(moving=False, docked=True, charging=False),
+            "docked")
+        self.assertEqual(
+            contract.physical_state(moving=False, docked=False, charging=False),
+            "parked")
+
+    def test_stand_in_telemetry_carries_the_state(self):
+        """The GPU-free stub must report it too, or isaac-demo shows '?'."""
+        kin = FieldKinematics()
+        scene = contract.scene_from_config(CFG)
+        kin.apply_command(contract.command_message(
+            scene, contract.goals_from_snapshot(scene, _snapshot()),
+            include_scene=True))
+        rows = kin.telemetry_entities()
+        for eid, row in rows.items():
+            if row["kind"] == "tractor":
+                self.assertIn(row["physical_state"], contract.PHYSICAL_STATES,
+                              f"{eid} reported {row.get('physical_state')!r}")
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,157 @@
+# HARVEST — the Isaac Sim robot models that may stand in for a farm tractor.
+#
+# THIS FILE IS THE ONLY MODEL LIST (the WISEPACK config/isaac_robots.yaml rule).
+# `robots.py` reads it; nothing else in HARVEST knows what a tractor looks like.
+# Everything above the simulator — FleetInterface, DeviceIO, the ROS 2 bridge,
+# the harvest-sim/1.0 contract, Diagnostics, FIWARE — addresses tractors by
+# their HARVEST id and by field coordinates only, so a real ZETRABOT USD model
+# can replace the proxy by ADDING AN ENTRY HERE and selecting it, with no change
+# anywhere in HARVEST.
+#
+# SELECTING A MODEL, in precedence order:
+#   1. --robot-model on harvest_isaac.py
+#   2. HARVEST_ISAAC_ROBOT_MODEL=<id>   (exported; run_isaac_sim.sh passes it)
+#   3. default_model below
+#
+# The numbers are the PROXY's, not a ZETRABOT datasheet: this is a stand-in with
+# approximately the right size and proportions for a compact electric
+# agricultural utility vehicle, which is what the HARVEST demonstration needs.
+# The one place a real datasheet is authoritative is config.yaml
+# (tractors.model), which HARVEST's energy model uses; the simulator never
+# reads speeds or capacities from here for anything but motion.
+
+schema: harvest-isaac-robots/1.0
+
+# The model used when nothing else selects one.
+default_model: proxy_utility_tractor
+
+models:
+  # ------------------------------------------------------------------------ #
+  # The default. Built procedurally in the stage, so it needs NO asset
+  # download, no Omniverse Nucleus connection and no network: on a machine with
+  # Isaac Sim installed it always works, which is why it is the default.
+  #
+  # It is a genuine PhysX articulation — a chassis rigid body, four wheel rigid
+  # bodies, four revolute joints with angular velocity drives — so it moves
+  # because its wheels turn against the ground, not because a transform is
+  # rewritten. Skid steer (both wheels of a side share a velocity) is the
+  # simplest steering that cannot jack-knife or wander off a plan.
+  - id: proxy_utility_tractor
+    display_name: Compact utility tractor (proxy)
+    provider: procedural
+    enabled: true
+    # Approximately a compact electric agricultural utility vehicle. Not a
+    # ZETRABOT model: see the header.
+    resembles: compact electric agricultural utility vehicle (ZETRABOT class)
+    body:
+      length_m: 2.60
+      width_m: 1.35
+      height_m: 1.00       # hull; the cab/rollbar frame is added on top
+      ground_clearance_m: 0.22
+      mass_kg: 950.0
+      # A load bed behind the cab, so the thing reads as a utility vehicle
+      # rather than a box, at the cost of two extra prims.
+      cab: true
+    wheels:
+      radius_m: 0.36
+      width_m: 0.24
+      track_m: 1.16        # centre-to-centre, left to right
+      wheelbase_m: 1.55    # centre-to-centre, front to rear
+      mass_kg: 22.0
+      # SPHERE, and this was measured rather than chosen for elegance.  With
+      # `cylinder` the wheel gprims produce no usable contact on this install:
+      # the vehicle settles onto its hull (chassis z drops from the authored
+      # 0.72 m to exactly height/2 = 0.50 m) and all four drives then turn their
+      # wheels at exactly the commanded rate with no load and no error, which
+      # looks precisely like a broken controller.  A same-radius sphere collider
+      # -- invisible, with the cylinder kept as the visual wheel -- has
+      # well-defined rolling contact and carries the vehicle.
+      collider: sphere
+      static_friction: 1.2
+      dynamic_friction: 1.0
+    drive:
+      kind: skid_steer
+      # Wheel DOFs, by joint name, grouped per side. A USD model brings its own
+      # names; the controller only ever asks the registry for these lists.
+      left_joints:  [wheel_front_left_joint, wheel_rear_left_joint]
+      right_joints: [wheel_front_right_joint, wheel_rear_right_joint]
+      # 18 km/h is the ZETRABOT-class road maximum from config.yaml; the demo
+      # drives at the eco speed unless told otherwise.
+      max_speed_mps: 5.0
+      max_yaw_rate_dps: 45.0
+      drive_damping: 100000.0
+      drive_max_force: 100000.0
+    colors:
+      body:  [0.16, 0.42, 0.20]      # a farm-machine green
+      cab:   [0.22, 0.24, 0.26]
+      wheel: [0.09, 0.09, 0.10]
+
+  # ------------------------------------------------------------------------ #
+  # THE SEAM FOR A REAL MODEL, and the shape a ZETRABOT entry will take. Give
+  # it a USD file (a local path, or a path under the Isaac Sim asset root) plus
+  # the prim paths and joint names of ITS articulation, and HARVEST needs no
+  # other change. Disabled until such a file exists on this machine: an entry
+  # that resolves to nothing must fail at selection, loudly, and not halfway
+  # through building a scene.
+  - id: zetrabot_usd
+    display_name: ZETRABOT (real USD model)
+    provider: usd
+    enabled: false
+    resembles: the real vehicle
+    usd:
+      # Tried in order. An absolute path is used as-is; a relative one is
+      # resolved against the Isaac Sim asset root
+      # (isaacsim.storage.native.get_assets_root_path).
+      asset_path_candidates:
+        - /data/isaac-sim/assets/harvest/zetrabot.usd
+      # Prim inside the referenced layer that carries the articulation root.
+      # NOT necessarily the reference prim itself — see WISEPACK's note about
+      # PhysicsArticulationRootAPI landing on <root>/root_joint.
+      articulation_root: ""
+      # Chassis/base link whose world pose IS the vehicle pose reported to
+      # HARVEST. Empty = the reference prim.
+      base_link: ""
+    body:
+      length_m: 2.60
+      width_m: 1.35
+      height_m: 1.40
+      mass_kg: 0.0          # 0 = keep the asset's own mass properties
+    wheels:
+      radius_m: 0.36
+      track_m: 1.16
+    drive:
+      kind: skid_steer
+      left_joints:  []
+      right_joints: []
+      max_speed_mps: 5.0
+      max_yaw_rate_dps: 45.0
+
+  # ------------------------------------------------------------------------ #
+  # An existing NVIDIA mobile robot, for comparison and for checking that the
+  # integration is not proxy-specific. Disabled by default because it needs the
+  # Isaac Sim asset root to be reachable (a download on first use) and because
+  # a warehouse AMR does not look like a tractor.
+  - id: nova_carter
+    display_name: NVIDIA Nova Carter (stock Isaac asset)
+    provider: usd
+    enabled: false
+    resembles: nothing agricultural — a wheeled AMR, for reference only
+    usd:
+      asset_path_candidates:
+        - /Isaac/Robots/NVIDIA/Carter/nova_carter/nova_carter.usd
+      articulation_root: ""
+      base_link: chassis_link
+    body:
+      length_m: 0.75
+      width_m: 0.52
+      height_m: 0.50
+      mass_kg: 0.0
+    wheels:
+      radius_m: 0.14
+      track_m: 0.41
+    drive:
+      kind: skid_steer
+      left_joints:  [joint_wheel_left]
+      right_joints: [joint_wheel_right]
+      max_speed_mps: 1.5
+      max_yaw_rate_dps: 90.0

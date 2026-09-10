@@ -73,7 +73,8 @@ harvest/
 │   │   └── fleet_backend.py  #     DeviceFleetInterface (FleetInterface over field devices)
 │   ├── simulators/           #   Farm-device simulator speaking real Modbus + OPC-UA
 │   │   └── isaac/            #     Optional Isaac Sim layer: contract, motion core,
-│   │                         #     GPU-free stub, Isaac standalone app (see its README)
+│   │                         #     GPU-free stub, robot-model registry, world,
+│   │                         #     WebRTC, Isaac standalone app (see its README)
 │   └── fiware/               #   NGSI-LD client, entity mapping, sync daemon
 ├── ros2_ws/                  # ROS 2 workspace (built & run inside Docker)
 │   └── src/harvest_ros/      #   fleet_bridge + isaac_bridge nodes + topics/qos contract
@@ -97,6 +98,7 @@ harvest/
     ├── test_fiware_entities.py #  NGSI-LD mapping + sync engine (stub broker)
     ├── test_ros_contract.py  #   ROS topic contract (no ROS required)
     ├── test_isaac_contract.py #  Sim wire contract + shared motion core (no Isaac required)
+    ├── test_isaac_robots.py   #  Robot registry, steering, WebRTC config, Isaac diagnostics
     └── test_protocol_integration.py # Live Modbus/OPC-UA loopback (auto-skips)
 ```
 
@@ -583,7 +585,7 @@ adapted from WISEPACK):
 | `devices` | + farm-device simulator (real Modbus TCP + OPC-UA on the wire) | `devices` |
 | `fiware` *(default)* | + Orion-LD, MongoDB, NGSI-LD sync daemon | `devices` |
 | `full` | + ROS 2 fleet bridge (`ros:jazzy`, DDS stays in-container) | `devices` |
-| `isaac` | fiware + fleet & Isaac bridges on the **host network**, so a host-run NVIDIA Isaac Sim joins over DDS (start it with `./scripts/run_isaac_sim.sh`) | `devices` |
+| `isaac` | fiware + fleet & Isaac bridges on the **host network**, plus real Isaac Sim started on the host (`HARVEST_ISAAC_AUTOSTART=0` to start it yourself with `./scripts/run_isaac_sim.sh`) | `devices` |
 | `isaac-demo` | isaac + a GPU-free simulator stand-in — the full HARVEST→ROS 2→simulator loop with no Isaac install | `devices` |
 
 `./run_harvest_dashboard.sh stop` tears everything down; `status` and
@@ -651,7 +653,7 @@ entities (SAREF-aligned, documented in `harvest_integrations/fiware/entities.py`
 | `urn:ngsi-ld:EnergyConsumer:<id>` | name, shed state, power |
 | `urn:ngsi-ld:FarmEnergySystem:main` | grid draw/cap, PV, tariff, price |
 | `urn:ngsi-ld:FarmCommand:main` | **inbound**: `command` attr; `lastNonce`/`lastResult` write-back |
-| `urn:ngsi-ld:FarmSimulation:isaac` | optional Isaac Sim layer: simulator kind/state, synced entities (mirrored only while its bridge is alive) |
+| `urn:ngsi-ld:FarmSimulation:isaac` | optional Isaac Sim layer: simulator kind/state, synced entities, per-tractor physical state, which tractors physically docked, robot model, whether a live view is being served (mirrored only while its bridge is alive) |
 
 Telemetry attributes carry `observedAt` and `unitCode`; the broker holds
 *current state*, not history.  External systems actuate the farm by PATCHing
@@ -701,16 +703,34 @@ HARVEST agents / scheduler → FleetInterface/DeviceIO → ROS 2 → Isaac bridg
 
 ```bash
 ./run_harvest_dashboard.sh isaac-demo   # whole loop, no GPU/Isaac needed
-./run_harvest_dashboard.sh isaac        # + start Isaac: ./scripts/run_isaac_sim.sh
+
+# Real Isaac Sim 6.0.1, watched over WebRTC — stack, bridges and simulator:
+HARVEST_ISAAC_VIEW_MODE=webrtc HARVEST_ISAAC_STREAMING=1 \
+HARVEST_ISAAC_HEADLESS=1 ./run_harvest_dashboard.sh isaac
+# then open the NVIDIA Isaac Sim WebRTC Streaming Client on http://127.0.0.1:49100
 python3 examples/isaac_sim_demo.py      # command a charge, watch the tractor drive & dock
+./run_harvest_dashboard.sh isaac-restart   # restart only Isaac; HARVEST keeps running
 ```
+
+In Isaac each tractor is a **PhysX articulation** (chassis, four wheels, four
+revolute joints with velocity drives), so it reaches a charger because its
+wheels turn against the ground — nothing is teleported, and the poses HARVEST
+receives are measured from the simulated bodies.  Which body represents a
+tractor is isolated in
+[`robot_models.yaml`](harvest_integrations/simulators/isaac/robot_models.yaml):
+the default is a procedurally built compact utility vehicle (ZETRABOT class, no
+asset download), and a real ZETRABOT USD model replaces it by editing that file
+alone — no HARVEST change.
 
 Isaac Sim itself runs **on the host, never in Docker** (its bundled Python +
 GPU stack); the `isaac` profile puts the two bridge nodes on the host network
-because Fast DDS discovery does not cross a bridged Docker network.  The wire
-contract (`harvest-sim/1.0`, two latched JSON topics `/harvest/sim/command` /
-`/harvest/sim/telemetry`), the shared motion core and the full demonstrator
-walkthrough are documented in
+because Fast DDS discovery does not cross a bridged Docker network, and both
+ends pin `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` because Fast DDS's shared-memory
+transport silently delivers nothing between a host process and a root
+container (discovery succeeds, data never arrives — measured; see the layer
+README).  The wire contract (`harvest-sim/1.0`, two latched JSON topics
+`/harvest/sim/command` / `/harvest/sim/telemetry`), the robot-model registry,
+the WebRTC setup and the full demonstrator walkthrough are documented in
 [`harvest_integrations/simulators/isaac/README.md`](harvest_integrations/simulators/isaac/README.md).
 The Isaac bridge pushes its state to `POST /api/integrations/status`
 (readable at `GET /api/integrations/status`), which feeds the Diagnostics
