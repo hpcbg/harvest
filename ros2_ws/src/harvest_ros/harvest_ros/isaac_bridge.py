@@ -8,9 +8,13 @@ Sits between the fleet side and the (optional) physical simulator:
 * subscribes to ``/harvest/fleet/snapshot`` (published by the fleet bridge --
   the single HARVEST->ROS gateway) and to HARVEST's ``/api/config`` (fetched
   once over HTTP) to derive the simulator scene and per-tractor motion goals;
-* publishes latched ``harvest-sim/1.0`` commands on ``/harvest/sim/command``;
+* publishes latched ``harvest-sim/1.1`` commands on ``/harvest/sim/command``
+  (scene + per-tractor goals + HARVEST's task goals from
+  ``GET /api/tasks/goals``);
 * subscribes to ``/harvest/sim/telemetry`` from Isaac Sim or the GPU-free
-  stub;
+  stub, and forwards the physical part of it -- pose, arrival at a work zone,
+  task progress -- to ``POST /api/tasks/progress``, where HARVEST turns it into
+  task-phase transitions and declares completion;
 * reports its own and the simulator's state to HARVEST via
   ``POST /api/integrations/status`` (tagged ``X-Harvest-Client:
   isaac-bridge``), which feeds the Diagnostics view and the FIWARE
@@ -60,6 +64,12 @@ class HarvestIsaacBridge(Node):
         self._scene = None                 # built from /api/config
         self._fingerprint = ""
         self._acked_fingerprint = ""
+        # HARVEST's task goals, refreshed on a timer.  Cached rather than
+        # fetched per snapshot: snapshots arrive several times a second and the
+        # task document changes on the scale of seconds.
+        self._task_goals: dict = {}
+        self._task_goals_ts = 0.0
+        self._task_service = None          # True / False / None = not yet known
         self._last_telemetry = None        # parsed telemetry dict
         self._last_telemetry_ts = 0.0
         self._ever_connected = False
@@ -75,7 +85,9 @@ class HarvestIsaacBridge(Node):
             float(self.get_parameter("status_period_s").value),
             self._report_status)
         self.create_timer(5.0, self._ensure_scene)
+        self.create_timer(2.0, self._refresh_task_goals)
         self._ensure_scene()
+        self._refresh_task_goals()
         self.get_logger().info(
             f"bridging {self._url} <-> {topics.SIM_COMMAND}")
 
@@ -95,6 +107,27 @@ class HarvestIsaacBridge(Node):
             f"{len(self._scene['entities'])} entities, "
             f"fingerprint {self._fingerprint}")
 
+    # -- HARVEST's task goals -------------------------------------------------
+    def _refresh_task_goals(self) -> None:
+        """Pull the task goals HARVEST decided.  Optional by design.
+
+        A stack without the task service (or an older HARVEST) simply returns
+        501 here, the cache stays empty, and the simulator gets exactly the
+        pre-task command it always got.  The task layer is additive.
+        """
+        document = self._http_json("GET", "/api/tasks/goals")
+        if isinstance(document, dict) and "tasks" in document:
+            if self._task_service is not True:
+                self.get_logger().info(
+                    f"task goals available: {len(document['tasks'])} task(s)")
+            self._task_service = True
+            self._task_goals = document
+            self._task_goals_ts = time.time()
+        elif self._task_service is None:
+            self._task_service = False
+            self.get_logger().info(
+                "no task service on this HARVEST — running without task goals")
+
     # -- HARVEST -> simulator -------------------------------------------------
     def _on_snapshot(self, msg: String) -> None:
         if self._scene is None:
@@ -103,7 +136,8 @@ class HarvestIsaacBridge(Node):
             snapshot = json.loads(msg.data)
         except json.JSONDecodeError:
             return
-        derived = contract.goals_from_snapshot(self._scene, snapshot)
+        derived = contract.goals_from_snapshot(
+            self._scene, snapshot, self._task_goals or None)
         # Keep sending the scene until the simulator acknowledges its
         # fingerprint from applied state (never assume the latched message
         # arrived -- the simulator may boot minutes later, or restart).
@@ -122,10 +156,41 @@ class HarvestIsaacBridge(Node):
         self._last_telemetry_ts = time.time()
         self._ever_connected = True
         self._acked_fingerprint = str(telemetry.get("scene_fingerprint") or "")
+        self._forward_task_progress(telemetry)
         if first:
             sim = telemetry.get("simulator") or {}
             self.get_logger().info(
                 f"simulator connected: {sim.get('kind')} ({sim.get('state')})")
+
+    def _forward_task_progress(self, telemetry: dict) -> None:
+        """Hand the physical facts to HARVEST's task service.
+
+        Only the physical fields are forwarded, and only for tractors -- the
+        simulator has no standing to say anything about a task beyond what its
+        bodies did.  HARVEST ignores a report about a task it did not assign.
+        """
+        if self._task_service is not True:
+            return
+        tractors = {}
+        for entity_id, row in (telemetry.get("entities") or {}).items():
+            if not isinstance(row, dict) or row.get("kind") != "tractor":
+                continue
+            tractors[entity_id] = {
+                "pose": row.get("pose"),
+                "task_id": row.get("task_id"),
+                "at_task": bool(row.get("at_task")),
+                "transit_progress_pct": row.get("transit_progress_pct", 0.0),
+                "task_progress_pct": row.get("task_progress_pct", 0.0),
+                "task_complete": bool(row.get("task_complete")),
+                "distance_to_task_m": row.get("distance_to_target_m"),
+                "activity": row.get("activity"),
+            }
+        if not tractors:
+            return
+        simulator = telemetry.get("simulator") or {}
+        self._http_json("POST", "/api/tasks/progress",
+                        {"kind": simulator.get("kind") or "unknown",
+                         "tractors": tractors})
 
     # -- status reporting (feeds Diagnostics + FIWARE mirror) -----------------
     def _simulator_view(self) -> dict:
@@ -161,6 +226,7 @@ class HarvestIsaacBridge(Node):
                 "robot_model": sim.get("robot_model") or {},
                 "physics": sim.get("physics"),
                 "problems": sim.get("problems") or [],
+                "tasks_visualised": len(self._task_goals.get("tasks") or {}),
             })
         return view
 

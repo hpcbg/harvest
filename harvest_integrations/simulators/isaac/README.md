@@ -200,6 +200,98 @@ file, name its articulation root, base link and per-side wheel joints, set
 `enabled: true`, and select it with `HARVEST_ISAAC_ROBOT_MODEL=zetrabot_usd`. No
 HARVEST code, no bridge change, no contract change.
 
+## HARVEST's tasks in the field
+
+The demonstrator shows the farm's actual work, not just its vehicles.  Every
+task HARVEST has scheduled for the day is drawn where it is, and the tractor
+assigned to it drives there, works for as long as HARVEST said the work takes,
+and reports back.
+
+**The division of labour is the point, so it is worth stating plainly.**
+
+| decision | who |
+|---|---|
+| what work exists, where, with what priority and deadline | HARVEST (`main.build_simulation_config` → `task_generator`) |
+| which tractor gets which task, in what order, and when | HARVEST (`main.Scheduler.assign_tasks` — *called*, not reimplemented) |
+| whether a task is finished | HARVEST (`harvest_integrations/tasks.py`) |
+| where the tractor actually is, whether it reached the work zone, how far through the work it is | Isaac Sim (reported as evidence) |
+
+Isaac Sim has no scheduler, no queue and no priorities.  It is told a location,
+a work radius and a number of seconds; a report about a task a tractor was not
+given is ignored, and no report can create, reassign or cancel anything.
+
+```text
+HARVEST task scheduler ─► FleetInterface/DeviceIO ─► ROS 2 ─► Isaac Sim
+pose / arrival / progress / completion ─► ROS 2 ─► HARVEST ─► FIWARE + Diagnostics
+```
+
+### What you see on the stream
+
+Each task is a **work zone** (a disc of exactly the work radius HARVEST sent), a
+**pole and sign**, an **assignment flag** and, for the task being travelled to
+or worked, a **tall beam** visible across the field.  Colour carries the state:
+
+| state | colour | meaning |
+|---|---|---|
+| pending | grey | known, not due or not yet assigned |
+| assigned | amber | a tractor is on its way |
+| active | green | being worked, right now |
+| completed | dark green | done — deliberately dim, so the eye stops counting it |
+| deferred | orange | was due, preempted or its window slipped; waiting again |
+| missed | red | the window closed |
+
+Only `assigned` and `active` tasks get the beam, so an 800 m field with twenty
+markers still answers "where is the action?" at a glance.
+
+**Which tractor is going to which task** needs no caption: every tractor carries
+an identity colour as a roof stripe, and its task's flag is painted the same
+colour.  **What a tractor is busy with** is its beacon: amber travelling, green
+working, blue charging, grey idle.
+
+`integrations.tasks` in `config.yaml` tunes this: `work_radius_m` (6),
+`seconds_per_work_minute` (1.0 — matching the 60x farm clock, so a 30-minute
+task takes 30 s to watch), `max_visualised_tasks` (24 — the rest are still
+scheduled, just not drawn).
+
+### Charging still wins
+
+Charging is not special-cased anywhere in the task layer.  HARVEST's scheduler
+already refuses to hand work to a charging tractor below 40 % (and may take a
+well-charged one off a charger as a last resort, releasing it properly), and the
+fleet backend already refuses to send a tractor with live work to a charger.
+Where a charger assignment and a task assignment overlap for the moment of a
+transition, the simulator drives to the charger — see `goals_from_snapshot`.
+
+### The task day
+
+Task windows are datetimes on the configured day; the live farm clock is a
+time-of-day that runs at 60x and wraps at midnight.  The service anchors one to
+the other, so windows open and close while you watch, and **rolls the day over**
+when the last deadline passes — regenerating the day's work through the same
+authoritative builder.  A stack left running therefore keeps having work to do
+instead of becoming a museum piece.  A freshly started stack begins at 08:00,
+which is when the first windows open.
+
+### Watching it
+
+```bash
+curl -s localhost:8765/api/tasks | python3 -m json.tool     # the whole schedule
+curl -s localhost:8765/api/tasks/goals                      # what the simulator is told
+```
+
+and the Diagnostics **Farm tasks** row, which is deliberately three or four
+lines:
+
+```text
+tractor_2 -> task_018, travelling, 248 m remaining
+tractor_1 -> task_003, working, 62%
+tractor_3 -> charger_1, charging
+```
+
+It also states which layer is executing: `physical` when Isaac is reporting
+progress, `clock` when HARVEST is advancing the work itself because no simulator
+is connected.  A clock-driven task must never read as a physically executed one.
+
 ## The initial world
 
 Deliberately simple, and built from HARVEST's own `config.yaml` (via
@@ -208,8 +300,9 @@ flat field with crop rows sized to contain everything, **three tractors**
 (`tractor_1`, `tractor_2`, `tractor_3` at their configured field coordinates,
 clearly separated), **two charging stations** (`charger_1`, `charger_2` — a
 bright pad, a post, and a head that turns green while the station is delivering
-power), sky and sun lighting, and a fixed spectator camera framing the whole
-field for the stream. Deliberately absent: buildings, terrain, obstacles, crops
+power), **HARVEST's scheduled tasks** as work zones with poles and signs (see
+above), sky and sun lighting, and a fixed spectator camera framing the tractors,
+the chargers and the work. Deliberately absent: buildings, terrain, obstacles, crops
 as geometry, vehicle cameras, and perception of any kind.
 
 ## The demonstrator
@@ -269,7 +362,8 @@ acknowledgement matches.
 | file | runs where | role |
 |---|---|---|
 | `contract.py` | everywhere | topics, schema, scene/goal derivation, fingerprints |
-| `motion.py` | stub | straight-line field kinematics (the stand-in's physics) |
+| `motion.py` | stub | straight-line kinematics + work stopwatch (the stand-in's physics) |
+| `../../tasks.py` | HARVEST API | the live task service — HARVEST's scheduler, driven |
 | `stub.py` | Docker (`isaac-demo`) | GPU-free stand-in simulator |
 | `robot_models.yaml` | host | **the only robot list** — the ZETRABOT seam |
 | `robots.py` | host, Isaac's `python.sh` | registry, the procedural vehicle, skid-steer control |
@@ -282,7 +376,9 @@ acknowledgement matches.
 
 Tests: `tests/test_isaac_contract.py` (wire contract + kinematics),
 `tests/test_isaac_robots.py` (registry, steering arithmetic, streaming
-configuration, Diagnostics facts). Both run without Isaac, a GPU or ROS.
+configuration, Diagnostics facts), `tests/test_live_tasks.py` (task assignment
+through the fleet interface, physical execution, and the rule that a simulator
+report is evidence and never instruction). Both run without Isaac, a GPU or ROS.
 Anything that needs PhysX is covered by `--self-test-drive`, which measures
 actual displacement rather than asserting that a command was sent.
 
@@ -310,6 +406,29 @@ vehicle does not move:
 The single most useful number when a vehicle will not move is the **root
 height**: authored `ground_clearance + height/2` means the wheels are carrying
 it; `height/2` means they are not.
+
+Then three more, from making the tractors actually *arrive* somewhere:
+
+* **Cap the turn by the speed, never the speed by the turn.** A skid-steer
+  vehicle cannot turn tightly at speed, so `drive_towards` pivots on the spot
+  beyond 20° of misalignment and otherwise clamps the yaw to
+  `degrees(v / MIN_TURN_RADIUS)`.  The inverse (`v ≤ ω·R`) looks equally
+  plausible and is a lower bound, not an upper one: it clamped a 5° heading
+  error to 0.55 m/s and crawled across an 800 m farm.
+* **The minimum turn radius is a measurement.** 6 m is fine on paper (0.27 g at
+  4 m/s) and skidded in PhysX — forward speed collapsed from 3.0 to 0.6 m/s
+  mid-corner with the wheels still turning at 10 rad/s.  15 m keeps every turn
+  inside the tyres' grip.
+* **The instantaneous linear velocity is noisy.** A tractor making steady 3 m/s
+  progress reported 0.8, 0.8, 3.5, 1.9, 0.5 m/s on consecutive samples, so
+  "it has stopped" needs several consecutive frames (`_ARRIVAL_FRAMES`), not one
+  low reading — otherwise a tractor starts "working" while driving through the
+  zone.  Judge progress from the *position*, not from the speed.
+
+The regression test for all of this is `--self-test-drive`: 334 m with the
+target BEHIND the vehicle, which must pivot, cross the field and stop.  The
+short forward hop it used to do passed happily while the controller could not
+turn at all.
 
 Richer agricultural simulation (field paths, implements, terrain, more device
 types) extends `robots.py`/`scene.py` behind the same contract — the bridge,

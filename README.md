@@ -99,6 +99,7 @@ harvest/
     ├── test_ros_contract.py  #   ROS topic contract (no ROS required)
     ├── test_isaac_contract.py #  Sim wire contract + shared motion core (no Isaac required)
     ├── test_isaac_robots.py   #  Robot registry, steering, WebRTC config, Isaac diagnostics
+    ├── test_live_tasks.py     #  Live task layer: HARVEST schedules, the simulator reports
     └── test_protocol_integration.py # Live Modbus/OPC-UA loopback (auto-skips)
 ```
 
@@ -713,9 +714,21 @@ python3 examples/isaac_sim_demo.py      # command a charge, watch the tractor dr
 ```
 
 In Isaac each tractor is a **PhysX articulation** (chassis, four wheels, four
-revolute joints with velocity drives), so it reaches a charger because its
-wheels turn against the ground — nothing is teleported, and the poses HARVEST
-receives are measured from the simulated bodies.  Which body represents a
+revolute joints with velocity drives), so it reaches a charger — or a task —
+because its wheels turn against the ground.  Nothing is teleported, and the
+poses HARVEST receives are measured from the simulated bodies.
+
+**HARVEST's agricultural tasks are drawn in the field** as work zones with poles,
+signs and assignment flags, colour-coded pending / assigned / active / completed
+/ deferred / missed.  The assigned tractor drives there, works for as long as
+HARVEST said the work takes, and reports arrival and progress back; HARVEST
+declares completion and decides what the tractor does next.  Task creation,
+assignment, priorities, deadlines and completion stay with HARVEST — the live
+task service (`harvest_integrations/tasks.py`) *calls* `main.Scheduler`, so there
+is no second scheduler and none at all inside Isaac.  `GET /api/tasks` is the
+whole schedule, `GET /api/tasks/goals` is the subset the simulator is told, and
+Diagnostics summarises it in three lines
+(`tractor_2 -> task_018, travelling, 248 m remaining`).  Which body represents a
 tractor is isolated in
 [`robot_models.yaml`](harvest_integrations/simulators/isaac/robot_models.yaml):
 the default is a procedurally built compact utility vehicle (ZETRABOT class, no

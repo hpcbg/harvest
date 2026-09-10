@@ -1,5 +1,5 @@
 """
-HARVEST <-> simulator wire contract (schema ``harvest-sim/1.0``).
+HARVEST <-> simulator wire contract (schema ``harvest-sim/1.1``).
 
 One pure-stdlib module imported by *both* ends of the simulation channel --
 the ROS 2 Isaac bridge (container), the GPU-free stub simulator (container)
@@ -21,21 +21,37 @@ Message shapes
 
 Command (bridge -> simulator), sent on every fleet snapshot::
 
-    {"schema": "harvest-sim/1.0", "kind": "command", "ts": ...,
+    {"schema": "harvest-sim/1.1", "kind": "command", "ts": ...,
      "scene": {...} | null,          # included until the fingerprint is acked
      "goals": {tractor_id: {"target": [x,y], "charging": bool,
-                            "docked_charger": id|null, "soc_pct": float}},
-     "chargers": {charger_id: {"active": bool, "power_kw": float}}}
+                            "docked_charger": id|null, "soc_pct": float,
+                            "activity": "task"|"charging"|"idle",
+                            "task_id": id|null}},
+     "chargers": {charger_id: {"active": bool, "power_kw": float}},
+     "tasks": {task_id: {"name": str, "location": [x,y],
+                         "work_radius_m": float, "state": TASK_STATES,
+                         "assigned_tractor": id|null, "priority": str,
+                         "progress_pct": float, "work_seconds": float,
+                         "emphasis": bool}}}
+
+``tasks`` was added in 1.1 (additive, so a 1.0 reader still works).  Every field
+in it is a CONSEQUENCE of a HARVEST decision: where the work is, how long it
+takes, which tractor was given it and what to draw.  There are no priorities to
+weigh and no queue to sort, because the simulator does not schedule -- see
+``harvest_integrations/tasks.py``.
 
 Telemetry (simulator -> bridge), published periodically::
 
-    {"schema": "harvest-sim/1.0", "kind": "telemetry", "ts": ...,
+    {"schema": "harvest-sim/1.1", "kind": "telemetry", "ts": ...,
      "simulator": {"kind": "isaac"|"stub", "state": "starting"|"running"|"error",
                    "version": str, "started_ts": float, "detail": str},
      "scene_fingerprint": str,       # acknowledges the applied scene
      "entities": {id: {"kind": ..., "pose": [x,y], "heading_deg": float,
                        "moving": bool, "docked": bool,
                        "physical_state": one of PHYSICAL_STATES,
+                       "activity": one of ACTIVITIES,
+                       "task_id": id|null, "at_task": bool,
+                       "task_progress_pct": float, "task_complete": bool,
                        "distance_to_target_m": float}},
      "stats": {"entities_synced": int, "sim_time_s": float}}
 
@@ -61,7 +77,7 @@ import json
 import time
 from typing import Any, Dict, List, Optional
 
-SCHEMA_VERSION = "harvest-sim/1.0"
+SCHEMA_VERSION = "harvest-sim/1.1"
 
 # Topic names.  harvest_ros.topics defines the same strings for the bridge
 # side; tests/test_isaac_contract.py asserts they stay identical.  Neither
@@ -95,6 +111,57 @@ def physical_state(*, moving: bool, docked: bool, charging: bool) -> str:
     if moving:
         return "moving"
     return "parked"
+
+
+#: What a tractor is BUSY WITH, which is a different question from what its body
+#: is doing (`physical_state`): a parked tractor may be working a task with its
+#: PTO, and a moving one may be on its way to a charger.  Diagnostics shows both.
+ACTIVITIES = ("idle", "travelling", "working", "charging")
+
+
+def activity(*, task_id: Optional[str], at_task: bool, charging: bool,
+             moving: bool) -> str:
+    """One word for what a tractor is busy with.  See ACTIVITIES."""
+    if charging:
+        return "charging"
+    if task_id:
+        return "working" if at_task else "travelling"
+    return "travelling" if moving else "idle"
+
+
+# --------------------------------------------------------------------------- #
+#  Task vocabulary
+# --------------------------------------------------------------------------- #
+#: The five task states the demonstrator distinguishes.  HARVEST's own model
+#: (``main.Task.phase``) has more phases than this and is authoritative; these
+#: are the ones worth DRAWING, and the mapping between them lives here so the
+#: scheduler side and the simulator side cannot describe a task differently.
+TASK_STATES = ("pending", "assigned", "active", "completed", "deferred", "missed")
+
+#: main.Task.phase -> drawn state.  INTERRUPTED and DELAYED are both "deferred":
+#: from the field's point of view they are the same situation -- work that was
+#: due and is now waiting again.
+_PHASE_TO_STATE = {
+    "PENDING": "pending",
+    "TRANSIT": "assigned",
+    "EXECUTING": "active",
+    "DONE": "completed",
+    "DELAYED": "deferred",
+    "INTERRUPTED": "deferred",
+}
+
+
+def task_state_from_phase(phase: str, missed: bool = False) -> str:
+    """Map a HARVEST task phase to the state the demonstrator draws.
+
+    ``missed`` is passed in rather than derived here: whether a window has
+    closed for good is a scheduling judgement, and this module deliberately
+    holds no clock.
+    """
+    state = _PHASE_TO_STATE.get(str(phase).upper(), "pending")
+    if missed and state in ("pending", "deferred"):
+        return "missed"
+    return state
 
 
 # --------------------------------------------------------------------------- #
@@ -162,13 +229,33 @@ def scene_fingerprint(scene: Dict[str, Any]) -> str:
 #  Goal derivation (from a harvest-fleet/1.0 snapshot dict)
 # --------------------------------------------------------------------------- #
 def goals_from_snapshot(scene: Dict[str, Any],
-                        snapshot: Dict[str, Any]) -> Dict[str, Any]:
-    """Map the semantic fleet state onto physical motion goals.
+                        snapshot: Dict[str, Any],
+                        task_goals: Optional[Dict[str, Any]] = None
+                        ) -> Dict[str, Any]:
+    """Map the semantic fleet state (+ HARVEST's task assignments) onto
+    physical motion goals.
 
     HARVEST's device model docks instantly (semantic state); the simulator
-    executes the physical part -- driving to the assigned charger -- so the
-    goal for a tractor with a charger assignment is that charger's pose, and
-    otherwise its reported field position (or home).
+    executes the physical part -- driving to the assigned charger or to the
+    assigned task -- so the goal for a tractor is, in order:
+
+    1. its assigned CHARGER's pose, while it is actually charging (or has no
+       work);
+    2. its assigned TASK's location, when HARVEST's scheduler has given it one;
+    3. its reported field position (or home) -- i.e. stay put.
+
+    ACTIVE CHARGING WINS over a task, and that ordering is HARVEST's rather than
+    a preference of this module: HARVEST's scheduler already refuses to give work
+    to a charging tractor and the fleet backend refuses to send a tractor with
+    live work to a charger, so the two overlap only for the moment of a
+    transition -- and during it the truthful thing to draw is the charger.
+    Occupying a bay after a FINISHED charge is not charging, and must not
+    override an assignment HARVEST has just made; the alternative was measured
+    and it left a full tractor parked on a pad while HARVEST believed it was on
+    its way to a task.
+
+    ``task_goals`` is the document from ``GET /api/tasks/goals``.  Absent (no
+    task service), behaviour is exactly as before: the task layer is additive.
     """
     charger_pose = {e["id"]: e["pose"] for e in scene.get("entities", [])
                     if e.get("kind") == "charger"}
@@ -185,23 +272,52 @@ def goals_from_snapshot(scene: Dict[str, Any],
         chargers[cid] = {"active": abs(power) > 0.05 or bool(c.get("occupied_by")),
                          "power_kw": round(power, 3)}
 
+    tasks = (task_goals or {}).get("tasks") or {}
+    # tractor id -> task id, exactly as HARVEST's scheduler assigned it.
+    tractor_task = {str(k): str(v) for k, v in
+                    ((task_goals or {}).get("assignments") or {}).items()}
+    default_radius = float((task_goals or {}).get("work_radius_m", 6.0))
+
     goals: Dict[str, Any] = {}
     for t in snapshot.get("tractors", []):
         tid = str(t.get("id"))
         charger_id = assigned.get(tid)
-        if charger_id and charger_id in charger_pose:
+        task_id = tractor_task.get(tid)
+        task = tasks.get(task_id) if task_id else None
+        # A tractor that is ACTUALLY CHARGING goes to (stays at) its charger;
+        # one that merely still occupies a bay after a finished charge does not
+        # get to ignore the work HARVEST just gave it.  Measured: with the
+        # charger winning on occupancy alone, a full tractor sat on the pad while
+        # HARVEST believed it was driving to task_002.
+        charging_now = bool(t.get("charging"))
+        if charger_id and charger_id in charger_pose and (
+                charging_now or not task):
             target = charger_pose[charger_id]
-        elif t.get("position"):
-            target = [float(t["position"][0]), float(t["position"][1])]
+            activity_kind, task_id, task = "charging", None, None
+        elif task and task.get("location"):
+            target = [float(task["location"][0]), float(task["location"][1])]
+            activity_kind = "task"
         else:
-            target = tractor_home.get(tid, [50.0, 50.0])
+            task_id, task, activity_kind = None, None, "idle"
+            if t.get("position"):
+                target = [float(t["position"][0]), float(t["position"][1])]
+            else:
+                target = tractor_home.get(tid, [50.0, 50.0])
         goals[tid] = {
             "target": [float(target[0]), float(target[1])],
             "charging": bool(t.get("charging")),
             "docked_charger": charger_id,
             "soc_pct": float(t.get("soc_pct", 0.0)),
+            "activity": activity_kind,
+            "task_id": task_id,
+            # How long the work takes, and how close counts as arrived, are
+            # HARVEST's numbers -- passed through so the simulator invents
+            # neither one.
+            "work_seconds": float(task.get("work_seconds", 0.0)) if task else 0.0,
+            "work_radius_m": float((task or {}).get("work_radius_m",
+                                                    default_radius)),
         }
-    return {"goals": goals, "chargers": chargers}
+    return {"goals": goals, "chargers": chargers, "tasks": tasks}
 
 
 # --------------------------------------------------------------------------- #
@@ -217,6 +333,7 @@ def command_message(scene: Dict[str, Any], derived: Dict[str, Any],
         "scene_fingerprint": scene_fingerprint(scene),
         "goals": derived.get("goals", {}),
         "chargers": derived.get("chargers", {}),
+        "tasks": derived.get("tasks", {}),
     }
 
 

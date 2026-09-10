@@ -52,6 +52,23 @@ _LOG = "[harvest-isaac]"
 MODEL_ENV = "HARVEST_ISAAC_ROBOT_MODEL"
 
 
+#: Steering constants for the skid-steer controller.  Deliberately conservative:
+#: this is a farm vehicle crossing an open field, and a stable slow approach
+#: beats a fast one that never converges.  See ``drive_towards`` for the
+#: measurements behind each.
+_YAW_GAIN = 2.5                 # deg/s of yaw command per degree of error
+_PIVOT_DEG = 20.0               # beyond this, turn on the spot before driving
+#: The tightest turn this vehicle takes AT SPEED without skidding, measured:
+#: 6 m looked reasonable on paper (0.27 g at 4 m/s) and in PhysX the tractor
+#: skidded -- forward speed collapsed from 3.0 to 0.6 m/s mid-corner while the
+#: wheels kept turning at 10 rad/s, and the controller then had to pivot to
+#: recover.  15 m keeps every turn inside the tyres' grip; a 20-degree
+#: correction still closes in under two seconds, which on an 800 m farm is
+#: nothing.
+_MIN_TURN_RADIUS_M = 15.0
+_CREEP_MPS = 0.6                # never crawl slower than this while driving
+
+
 class RobotModelError(RuntimeError):
     """A model could not be resolved or built.  Always names what was tried."""
 
@@ -348,8 +365,15 @@ def _add_wheel_joint(stage, path: str, chassis_path: str, wheel_path: str,
 
 
 def _build_procedural(stage, prim_path: str, model: RobotModel,
-                      position: Tuple[float, float], heading_deg: float) -> str:
-    """Build the proxy vehicle at ``prim_path``; returns the base-link path."""
+                      position: Tuple[float, float], heading_deg: float,
+                      accent: Optional[Tuple[float, float, float]] = None) -> str:
+    """Build the proxy vehicle at ``prim_path``; returns the base-link path.
+
+    ``accent`` is the tractor's IDENTITY colour, painted on a roof stripe.  The
+    task marker HARVEST assigned to this tractor carries the same colour, which
+    is what makes "which tractor is going to which task" readable from a
+    spectator camera without any text at all.
+    """
     from pxr import Gf, PhysxSchema, UsdGeom, UsdPhysics    # noqa: PLC0415
 
     body = model.body
@@ -428,11 +452,18 @@ def _build_procedural(stage, prim_path: str, model: RobotModel,
                  (length * 0.34, width * 0.86, 0.22),
                  (length * 0.30, 0.0, height / 2.0 + 0.11),
                  model.colors.get("body") or [0.16, 0.42, 0.2], collision=False)
-        # A small amber beacon: at field scale it is what makes a vehicle
-        # findable in the viewport at a glance.
+        # The beacon is RECOLOURED AT RUNTIME to show what the tractor is busy
+        # with (travelling / working / charging / idle) -- see
+        # TractorRobot.set_activity_colour.  At field scale it is also what makes
+        # a vehicle findable in the viewport at a glance.
         _add_box(stage, f"{chassis_path}/beacon", (0.16, 0.16, 0.18),
                  (-length * 0.06, 0.0, height / 2.0 + cab_h + 0.09),
                  [0.95, 0.62, 0.05], collision=False)
+        # The identity stripe: fixed for the life of the vehicle.
+        _add_box(stage, f"{chassis_path}/stripe",
+                 (length * 0.44, width * 0.84, 0.10),
+                 (-length * 0.06, 0.0, height / 2.0 + cab_h + 0.01),
+                 list(accent or (0.85, 0.85, 0.88)), collision=False)
 
     for name, sx, sy in (("front_left", +1.0, +1.0), ("front_right", +1.0, -1.0),
                          ("rear_left", -1.0, +1.0), ("rear_right", -1.0, -1.0)):
@@ -510,9 +541,13 @@ class TractorRobot:
     """
 
     def __init__(self, entity_id: str, model: RobotModel, *,
-                 prim_path: Optional[str] = None):
+                 prim_path: Optional[str] = None,
+                 accent: Optional[Tuple[float, float, float]] = None):
         self.id = entity_id
         self.model = model
+        #: Identity colour, shared with the marker of the task it is assigned.
+        self.accent = accent
+        self._beacon_colour: Optional[Tuple[float, float, float]] = None
         self.prim_path = prim_path or f"/World/{entity_id}"
         self.base_link_path = self.prim_path
         # The prim that CARRIES PhysicsArticulationRootAPI, which for a floating
@@ -537,7 +572,8 @@ class TractorRobot:
         self._heading_deg = heading_deg
         if self.model.provider == "procedural":
             self.base_link_path = _build_procedural(
-                stage, self.prim_path, self.model, position, heading_deg)
+                stage, self.prim_path, self.model, position, heading_deg,
+                self.accent)
             self.articulation_path = self.base_link_path
         else:
             self.base_link_path = _build_usd(
@@ -588,6 +624,30 @@ class TractorRobot:
     @property
     def ready(self) -> bool:
         return self.articulation is not None
+
+    # -- appearance ---------------------------------------------------------
+    def set_activity_colour(self, colour: Tuple[float, float, float]) -> None:
+        """Paint the beacon to show what the tractor is busy with.
+
+        Only writes when the colour actually changes: this is called every frame
+        and a USD attribute write per frame per vehicle is pure waste.  Failures
+        are swallowed -- a beacon is a courtesy to the viewer, and a USD model
+        without one must not break the drive loop.
+        """
+        if colour == self._beacon_colour:
+            return
+        self._beacon_colour = colour
+        try:
+            from pxr import Gf, UsdGeom                      # noqa: PLC0415
+            import isaacsim.core.experimental.utils.stage as stage_utils  # noqa: PLC0415
+
+            prim = stage_utils.get_current_stage().GetPrimAtPath(
+                f"{self.base_link_path}/beacon")
+            if prim:
+                UsdGeom.Gprim(prim).GetDisplayColorAttr().Set(
+                    [Gf.Vec3f(*colour)])
+        except Exception:                                    # noqa: BLE001
+            pass
 
     # -- measurement (never echoed from the goal) ---------------------------
     def measure(self) -> None:
@@ -641,19 +701,43 @@ class TractorRobot:
 
         bearing = math.degrees(math.atan2(dy, dx))
         error = (bearing - self._heading_deg + 180.0) % 360.0 - 180.0
-        yaw_rate = max(-self.model.max_yaw_rate_dps,
-                       min(self.model.max_yaw_rate_dps, 1.6 * error))
+        wanted_yaw = _YAW_GAIN * error
         top = min(speed_mps, self.model.max_speed_mps)
-        if abs(error) > 55.0:
-            # Turn on the spot first.  Driving while badly misaligned produces
-            # the long banana-shaped approach that makes docking look accidental.
+
+        # PIVOT WHEN MISALIGNED, THEN CAP THE TURN BY THE SPEED -- in that
+        # order, and the order is the whole lesson here.  A skid-steer vehicle
+        # cannot turn tightly at speed (the wheels just slip), so a fast drive
+        # and a hard turn commanded together produce neither and the heading
+        # error never closes.  Measured on the live farm before this existed:
+        # tractors holding 1.3-2.1 m/s while rotating two degrees a second,
+        # distance-to-target INCREASING, one driving clean off the field.
+        #
+        #   * beyond PIVOT_DEG of misalignment, do not drive at all -- turn on
+        #     the spot, where a stationary skid-steer has all the authority it
+        #     needs and no slip;
+        #   * inside it, drive at a speed tapered by alignment and by how close
+        #     the target is, and clamp the YAW to what that speed can sweep
+        #     without slipping: the tightest honest turn is MIN_TURN_RADIUS, so
+        #     the feasible rate is v / R.
+        #
+        # (An earlier attempt had this backwards -- capping SPEED at
+        # omega * R -- which made a 5-degree heading error clamp the tractor to
+        # 0.55 m/s and crawl across an 800 m farm.  v >= omega * R is a lower
+        # bound on speed, not an upper one.)
+        if abs(error) > _PIVOT_DEG:
+            yaw_rate = max(-self.model.max_yaw_rate_dps,
+                           min(self.model.max_yaw_rate_dps, wanted_yaw))
             command = DriveCommand(0.0, yaw_rate, "turning")
         else:
-            # Ease off with the heading error and over the last few metres, so
-            # the vehicle rolls to a stop at the charger instead of overshooting
-            # and hunting.
-            scale = math.cos(math.radians(error)) * min(1.0, distance / 6.0 + 0.25)
-            command = DriveCommand(max(0.4, top * scale), yaw_rate, "driving")
+            alignment = max(0.0, math.cos(math.radians(error))) ** 2
+            # Ease off over the last few metres so the vehicle rolls to a stop
+            # instead of overshooting and hunting around the target.
+            approach = min(1.0, distance / 8.0 + 0.2)
+            speed = max(_CREEP_MPS, min(top, top * alignment * approach))
+            feasible_yaw = min(self.model.max_yaw_rate_dps,
+                               math.degrees(speed / _MIN_TURN_RADIUS_M))
+            yaw_rate = max(-feasible_yaw, min(feasible_yaw, wanted_yaw))
+            command = DriveCommand(speed, yaw_rate, "driving")
         self.last_command = command
         return self._apply(command)
 

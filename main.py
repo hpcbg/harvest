@@ -381,6 +381,148 @@ class PVModel:
 
 
 # ============================================================
+# Configuration builder
+# ============================================================
+
+def build_simulation_config(raw: Dict[str, Any],
+                            scenario_def: ScenarioDef) -> SimulationConfig:
+    """Build the typed :class:`SimulationConfig` from a merged config dict.
+
+    Module-level ON PURPOSE.  This is where the farm's tasks are CREATED --
+    generated (task_generator) or taken from ``config.yaml`` -- along with the
+    tractor model, the fleet, the chargers and the energy consumers, and it is
+    therefore the single authoritative description of what work the farm has to
+    do.  The live task service
+    (:mod:`harvest_integrations.tasks`, which drives the Isaac Sim
+    demonstrator) calls this directly rather than re-deriving tasks, so there is
+    exactly one task-creation path in HARVEST and the simulated day and the live
+    demonstrator cannot disagree about what a task is.
+
+    It builds no simulator, no predictors and no MARL engine, so it is cheap
+    enough to call from a request handler.
+    """
+    cfg = raw
+    mc = cfg["tractors"]["model"]
+    model = TractorModel(
+        name=mc["name"],
+        battery_capacity_kwh=float(mc["battery_capacity_kwh"]),
+        swappable_capacity_kwh=float(mc["swappable_capacity_kwh"]),
+        module_capacity_kwh=float(mc["module_capacity_kwh"]),
+        modules_total=int(mc["modules_total"]),
+        modules_swappable=int(mc["modules_swappable"]),
+        max_charge_power_kw=float(mc["max_charge_power_kw"]),
+        full_charge_time_h=float(mc["full_charge_time_h"]),
+        nominal_power_kw=float(mc["nominal_power_kw"]),
+        max_power_kw=float(mc["max_power_kw"]),
+        pto_power_kw=float(mc["pto_power_kw"]),
+        max_speed_kmh=float(mc["max_speed_kmh"]),
+        eco_speed_kmh=float(mc["eco_speed_kmh"]),
+        charging_efficiency=float(mc["charging_efficiency"]),
+        driving_kwh_per_km=float(mc["driving_kwh_per_km"]),
+        idle_kwh_per_h=float(mc["idle_kwh_per_h"]),
+    )
+
+    tpv_raw = cfg.get("tractor_pv", {})
+    tractor_pv_cfg = TractorPVConfig(
+        panel_peak_w=float(tpv_raw.get("panel_peak_w", 650)),
+        field_derating=float(tpv_raw.get("field_derating", 0.70)),
+        parked_derating=float(tpv_raw.get("parked_derating", 0.95)),
+    )
+
+    tractors = [
+        Tractor(
+            tractor_id=tr["id"],
+            soc_percent=float(tr["initial_soc_percent"]),
+            location=(float(tr["initial_location"]["x"]), float(tr["initial_location"]["y"])),
+            enabled=bool(tr["enabled"]),
+            has_pv_roof=bool(tr.get("has_pv_roof", False)),
+        )
+        for tr in cfg["tractors"]["fleet"]
+    ]
+
+    chargers = [
+        Charger(
+            charger_id=ch["id"],
+            location=(float(ch["location"]["x"]), float(ch["location"]["y"])),
+            max_power_kw=float(ch["max_power_kw"]),
+        )
+        for ch in cfg["charging"]["stations"]
+    ]
+
+    tg = cfg.get("task_generation", {})
+    default_work_speed = float(tg.get("work_speed_kmh", 4.0))
+    if tg.get("mode", "static") == "generated":
+        task_items = generate_tasks(
+            start_date=cfg["simulation"]["start_time"],
+            num_tasks=int(tg.get("num_tasks", 12)),
+            seed=int(tg.get("seed", 42)),
+            map_width_m=float(cfg["farm"]["map"]["width_m"]),
+            map_height_m=float(cfg["farm"]["map"]["height_m"]),
+        )
+    else:
+        task_items = cfg.get("tasks", [])
+
+    tasks = []
+    for t in task_items:
+        duration_minutes = int(t["duration_minutes"])
+        # Work (in-field) distance is derived from execution time × working speed —
+        # the simulator has no explicit work-distance field for generated tasks.
+        work_speed = float(t.get("work_speed_kmh", default_work_speed))
+        work_distance = round(duration_minutes / 60.0 * work_speed, 3)
+        tasks.append(Task(
+            task_id=t.get("id", t.get("task_id")),
+            name=t["name"],
+            location=(float(t["location"]["x"]), float(t["location"]["y"])),
+            earliest_start=parse_dt(t["earliest_start"]),
+            latest_finish=parse_dt(t["latest_finish"]),
+            duration_minutes=duration_minutes,
+            distance_km=float(t["distance_km"]),
+            priority=str(t["priority"]),
+            can_wait=bool(t["can_wait"]),
+            uses_pto=bool(t["uses_pto"]),
+            pto_power_kw=float(t["pto_power_kw"]),
+            work_speed_kmh=work_speed,
+            work_distance_km=work_distance,
+            # transit distance is provided by the generator; work distance is derived
+            distance_source="provided",
+        ))
+
+    consumers: List[EnergyConsumer] = []
+    for c in cfg.get("energy_consumers", []):
+        schedule = c.get("schedule")
+        consumers.append(EnergyConsumer(
+            consumer_id=c["id"],
+            power_kw=float(c["power_kw"]),
+            priority=str(c["priority"]),
+            start=parse_hhmm(schedule["start"]) if schedule else None,
+            end=parse_hhmm(schedule["end"]) if schedule else None,
+            always_on=bool(c.get("always_on", False)),
+        ))
+
+    v2l_cfg = cfg.get("v2l", {})
+    return SimulationConfig(
+        start_time=parse_dt(cfg["simulation"]["start_time"]),
+        end_time=parse_dt(cfg["simulation"]["end_time"]),
+        step_minutes=int(cfg["simulation"]["time_step_minutes"]),
+        grid_max_power_kw=float(cfg["grid"]["max_power_kw"]),
+        tractors_model=model,
+        tractors=tractors,
+        chargers=chargers,
+        tasks=tasks,
+        consumers=consumers,
+        pv_profile={int(k): float(v) for k, v in cfg["pv"]["profile"].items()},
+        farm_fixed_peak_kw=float(cfg["pv"]["farm_fixed_peak_kw"]),
+        tractor_pv_cfg=tractor_pv_cfg,
+        objective_weights=cfg["scheduler"]["objective_weights"],
+        scenario_def=scenario_def,
+        v2l_enabled=bool(v2l_cfg.get("enabled", False)),
+        v2l_min_soc_pct=float(v2l_cfg.get("min_soc_pct", 35.0)),
+        v2l_max_discharge_kw=float(v2l_cfg.get("max_discharge_kw", 6.6)),
+        v2l_trigger_overload_kw=float(v2l_cfg.get("trigger_overload_kw", 0.5)),
+    )
+
+
+# ============================================================
 # Scheduler
 # ============================================================
 
@@ -708,125 +850,9 @@ class Simulator:
     # ── Config builder ──────────────────────────────────────────────────────
 
     def _build_config(self) -> SimulationConfig:
-        cfg = self.raw
-        mc = cfg["tractors"]["model"]
-        model = TractorModel(
-            name=mc["name"],
-            battery_capacity_kwh=float(mc["battery_capacity_kwh"]),
-            swappable_capacity_kwh=float(mc["swappable_capacity_kwh"]),
-            module_capacity_kwh=float(mc["module_capacity_kwh"]),
-            modules_total=int(mc["modules_total"]),
-            modules_swappable=int(mc["modules_swappable"]),
-            max_charge_power_kw=float(mc["max_charge_power_kw"]),
-            full_charge_time_h=float(mc["full_charge_time_h"]),
-            nominal_power_kw=float(mc["nominal_power_kw"]),
-            max_power_kw=float(mc["max_power_kw"]),
-            pto_power_kw=float(mc["pto_power_kw"]),
-            max_speed_kmh=float(mc["max_speed_kmh"]),
-            eco_speed_kmh=float(mc["eco_speed_kmh"]),
-            charging_efficiency=float(mc["charging_efficiency"]),
-            driving_kwh_per_km=float(mc["driving_kwh_per_km"]),
-            idle_kwh_per_h=float(mc["idle_kwh_per_h"]),
-        )
-
-        tpv_raw = cfg.get("tractor_pv", {})
-        tractor_pv_cfg = TractorPVConfig(
-            panel_peak_w=float(tpv_raw.get("panel_peak_w", 650)),
-            field_derating=float(tpv_raw.get("field_derating", 0.70)),
-            parked_derating=float(tpv_raw.get("parked_derating", 0.95)),
-        )
-
-        tractors = [
-            Tractor(
-                tractor_id=tr["id"],
-                soc_percent=float(tr["initial_soc_percent"]),
-                location=(float(tr["initial_location"]["x"]), float(tr["initial_location"]["y"])),
-                enabled=bool(tr["enabled"]),
-                has_pv_roof=bool(tr.get("has_pv_roof", False)),
-            )
-            for tr in cfg["tractors"]["fleet"]
-        ]
-
-        chargers = [
-            Charger(
-                charger_id=ch["id"],
-                location=(float(ch["location"]["x"]), float(ch["location"]["y"])),
-                max_power_kw=float(ch["max_power_kw"]),
-            )
-            for ch in cfg["charging"]["stations"]
-        ]
-
-        tg = cfg.get("task_generation", {})
-        default_work_speed = float(tg.get("work_speed_kmh", 4.0))
-        if tg.get("mode", "static") == "generated":
-            task_items = generate_tasks(
-                start_date=cfg["simulation"]["start_time"],
-                num_tasks=int(tg.get("num_tasks", 12)),
-                seed=int(tg.get("seed", 42)),
-                map_width_m=float(cfg["farm"]["map"]["width_m"]),
-                map_height_m=float(cfg["farm"]["map"]["height_m"]),
-            )
-        else:
-            task_items = cfg.get("tasks", [])
-
-        tasks = []
-        for t in task_items:
-            duration_minutes = int(t["duration_minutes"])
-            # Work (in-field) distance is derived from execution time × working speed —
-            # the simulator has no explicit work-distance field for generated tasks.
-            work_speed = float(t.get("work_speed_kmh", default_work_speed))
-            work_distance = round(duration_minutes / 60.0 * work_speed, 3)
-            tasks.append(Task(
-                task_id=t.get("id", t.get("task_id")),
-                name=t["name"],
-                location=(float(t["location"]["x"]), float(t["location"]["y"])),
-                earliest_start=parse_dt(t["earliest_start"]),
-                latest_finish=parse_dt(t["latest_finish"]),
-                duration_minutes=duration_minutes,
-                distance_km=float(t["distance_km"]),
-                priority=str(t["priority"]),
-                can_wait=bool(t["can_wait"]),
-                uses_pto=bool(t["uses_pto"]),
-                pto_power_kw=float(t["pto_power_kw"]),
-                work_speed_kmh=work_speed,
-                work_distance_km=work_distance,
-                # transit distance is provided by the generator; work distance is derived
-                distance_source="provided",
-            ))
-
-        consumers: List[EnergyConsumer] = []
-        for c in cfg.get("energy_consumers", []):
-            schedule = c.get("schedule")
-            consumers.append(EnergyConsumer(
-                consumer_id=c["id"],
-                power_kw=float(c["power_kw"]),
-                priority=str(c["priority"]),
-                start=parse_hhmm(schedule["start"]) if schedule else None,
-                end=parse_hhmm(schedule["end"]) if schedule else None,
-                always_on=bool(c.get("always_on", False)),
-            ))
-
-        v2l_cfg = cfg.get("v2l", {})
-        return SimulationConfig(
-            start_time=parse_dt(cfg["simulation"]["start_time"]),
-            end_time=parse_dt(cfg["simulation"]["end_time"]),
-            step_minutes=int(cfg["simulation"]["time_step_minutes"]),
-            grid_max_power_kw=float(cfg["grid"]["max_power_kw"]),
-            tractors_model=model,
-            tractors=tractors,
-            chargers=chargers,
-            tasks=tasks,
-            consumers=consumers,
-            pv_profile={int(k): float(v) for k, v in cfg["pv"]["profile"].items()},
-            farm_fixed_peak_kw=float(cfg["pv"]["farm_fixed_peak_kw"]),
-            tractor_pv_cfg=tractor_pv_cfg,
-            objective_weights=cfg["scheduler"]["objective_weights"],
-            scenario_def=self.scenario_def,
-            v2l_enabled=bool(v2l_cfg.get("enabled", False)),
-            v2l_min_soc_pct=float(v2l_cfg.get("min_soc_pct", 35.0)),
-            v2l_max_discharge_kw=float(v2l_cfg.get("max_discharge_kw", 6.6)),
-            v2l_trigger_overload_kw=float(v2l_cfg.get("trigger_overload_kw", 0.5)),
-        )
+        """Delegates to :func:`build_simulation_config` -- see the note there
+        about task creation living in exactly one place."""
+        return build_simulation_config(self.raw, self.scenario_def)
 
     # ── Dynamic events ──────────────────────────────────────────────────────
 

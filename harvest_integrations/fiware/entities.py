@@ -39,6 +39,7 @@ ENTITY_PREFIX = "urn:ngsi-ld:"
 COMMAND_ENTITY_ID = f"{ENTITY_PREFIX}FarmCommand:main"
 GRID_ENTITY_ID = f"{ENTITY_PREFIX}FarmEnergySystem:main"
 SIMULATION_ENTITY_ID = f"{ENTITY_PREFIX}FarmSimulation:isaac"
+TASK_BOARD_ENTITY_ID = f"{ENTITY_PREFIX}FarmTaskBoard:main"
 
 _UNIT_KW = "KWT"        # UN/CEFACT: kilowatt
 _UNIT_KWH = "KWH"       # kilowatt hour
@@ -168,6 +169,43 @@ def simulation_entity(status: Dict[str, Any],
         entity["liveViewAvailable"] = _prop(
             view.get("state") == "serving", ts)
     return entity
+
+
+def task_board_entity(document: Dict[str, Any],
+                      observed_at: Optional[str] = None) -> Dict[str, Any]:
+    """Mirror of HARVEST's live task board.
+
+    ``document`` is ``GET /api/tasks``.
+
+    ONE ENTITY, NOT ONE PER TASK, and a summary rather than a stream.  What an
+    NGSI-LD consumer needs from the farm's work is the semantic answer -- how
+    much work is due, what is being done right now, by which tractor, and
+    whether the physical layer or HARVEST's own clock is executing it.  Mirroring
+    twenty tasks with a progress percentage each would rewrite the broker several
+    times a second to say almost nothing; the whole schedule stays one HTTP call
+    away at ``/api/tasks``, the same rule applied to the simulator's pose stream.
+    """
+    ts = observed_at or _now_iso()
+    counts = document.get("counts") or {}
+    assignments = document.get("assignments") or {}
+    tasks = document.get("tasks") or []
+    active = sorted(t["id"] for t in tasks
+                    if isinstance(t, dict) and t.get("state") == "active")
+    return {
+        "id": TASK_BOARD_ENTITY_ID,
+        "type": "FarmTaskBoard",
+        "day": _prop(str(document.get("day") or ""), ts),
+        "clock": _prop(str(document.get("clock") or ""), ts),
+        # Who decided all of this.  Stated in the broker because "HARVEST is
+        # authoritative for scheduling" is a property of the system worth
+        # publishing, not just a claim in a document.
+        "scheduler": _prop(str(document.get("scheduler") or ""), ts),
+        "executedBy": _prop(str(document.get("execution") or "unknown"), ts),
+        "tasksTotal": _prop(len(tasks), ts),
+        "taskCounts": _prop({k: int(v) for k, v in counts.items()}, ts),
+        "activeTasks": _prop(active, ts),
+        "assignments": _prop({str(k): str(v) for k, v in assignments.items()}, ts),
+    }
 
 
 def command_entity() -> Dict[str, Any]:

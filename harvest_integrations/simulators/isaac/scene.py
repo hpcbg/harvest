@@ -44,6 +44,43 @@ PAD_COLOR = (0.85, 0.80, 0.20)
 FIELD_COLOR = (0.28, 0.42, 0.20)
 ROW_COLOR = (0.36, 0.30, 0.18)
 
+#: Task marker proportions, in metres.  The zone is the work radius HARVEST
+#: sent, so what you see is exactly the area the tractor has to reach.
+TASK_POLE_RADIUS, TASK_POLE_HEIGHT = 0.10, 3.0
+TASK_SIGN_SIZE = (1.8, 0.14, 1.0)
+TASK_FLAG_SIZE = (0.9, 0.18, 0.55)
+TASK_BEAM_SIZE = (0.30, 0.30, 9.0)
+
+#: ONE COLOUR PER TASK STATE, and the whole point of the scene is that these
+#: read at a glance from the spectator camera.  Pending work is present but
+#: quiet; the two states that matter right now are loud; finished work goes
+#: dark so the eye stops counting it.
+TASK_COLORS: Dict[str, Any] = {
+    "pending":   (0.55, 0.58, 0.62),      # grey — known, not due
+    "assigned":  (0.98, 0.62, 0.05),      # amber — a tractor is on its way
+    "active":    (0.15, 0.95, 0.30),      # green — being worked, now
+    "completed": (0.10, 0.30, 0.14),      # dark green — done, deliberately dim
+    "deferred":  (0.85, 0.45, 0.10),      # orange — was due, waiting again
+    "missed":    (0.90, 0.12, 0.12),      # red — the window closed
+}
+
+#: Identity colours, assigned to tractors in sorted id order.  A task's flag is
+#: painted in its assigned tractor's colour, and the tractor carries the same
+#: colour as a roof stripe, so "which tractor is going to which task" is one
+#: glance rather than a caption.
+TRACTOR_ACCENTS = (
+    (0.20, 0.55, 0.95),      # blue
+    (0.95, 0.25, 0.75),      # magenta
+    (0.98, 0.85, 0.15),      # yellow
+    (0.30, 0.90, 0.90),      # cyan
+    (0.70, 0.40, 0.95),      # violet
+)
+
+
+def accent_for(index: int):
+    """Identity colour for the nth tractor.  Wraps rather than running out."""
+    return TRACTOR_ACCENTS[index % len(TRACTOR_ACCENTS)]
+
 
 class HarvestWorld:
     """The stage for one scene fingerprint.
@@ -60,13 +97,27 @@ class HarvestWorld:
         self.field: Dict[str, float] = {"width": 100.0, "height": 100.0}
         self.fingerprint = ""
         self._charger_active: Dict[str, bool] = {}
+        # Task markers, keyed by HARVEST task id.  Created once, then only
+        # recoloured: authoring prims on a PLAYING stage is what invalidates the
+        # PhysX tensor views the vehicles depend on.
+        self.tasks: Dict[str, Dict[str, Any]] = {}
+        self._task_drawn: Dict[str, Any] = {}
+        self.accents: Dict[str, Any] = {}
+        #: Task ids HARVEST sent that have no marker yet -- reported, never
+        #: silently skipped, because a missing marker is a lie about the field.
+        self.unknown_tasks: List[str] = []
 
     # ---------------------------------------------------------------- build --
-    def build(self, scene: Dict[str, Any], fingerprint: str) -> None:
+    def build(self, scene: Dict[str, Any], fingerprint: str,
+              tasks: Optional[Dict[str, Any]] = None) -> None:
         """Author the whole stage.  The caller must have STOPPED the timeline.
 
         Mutating a playing stage is how you get a PhysX tensor view that
         outlives the prims it points at (WISEPACK rule: stop, rebuild, play).
+
+        ``tasks`` is HARVEST's task-goal map from the same command message.  The
+        markers are created HERE, with the rest of the stage, and afterwards only
+        recoloured -- see :meth:`sync_tasks`.
         """
         import isaacsim.core.experimental.utils.stage as stage_utils  # noqa: PLC0415
         from isaacsim.core.experimental.objects import DomeLight, DistantLight  # noqa: PLC0415
@@ -84,7 +135,11 @@ class HarvestWorld:
         tractors = [e for e in entities if e.get("kind") == "tractor"]
         chargers = [e for e in entities if e.get("kind") == "charger"]
 
-        self._build_field(stage, tractors + chargers)
+        # The field has to contain the work, not just the vehicles.
+        self._build_field(stage, tractors + chargers
+                          + [{"pose": t.get("location")}
+                             for t in (tasks or {}).values()
+                             if isinstance(t, dict) and t.get("location")])
         DomeLight("/World/Sky").set_intensities(1200)
         # A sun as well as the dome: without a directional light nothing casts a
         # shadow and the vehicles look pasted onto the field rather than on it.
@@ -96,6 +151,11 @@ class HarvestWorld:
             self._build_charger(stage, str(spec["id"]),
                                 _xy(spec.get("pose") or spec.get("home")))
 
+        # Identity colours first: the tractors and the task flags must agree.
+        self.accents = {str(spec["id"]): accent_for(index)
+                        for index, spec in enumerate(
+                            sorted(tractors, key=lambda e: str(e["id"])))}
+
         for index, spec in enumerate(tractors):
             entity_id = str(spec["id"])
             position = _xy(spec.get("home") or spec.get("pose"))
@@ -103,11 +163,18 @@ class HarvestWorld:
             # first move of the demonstration is a drive rather than a
             # three-point turn.  Physics decides everything after that.
             heading = _bearing(position, self._charging_centre(chargers))
-            robot = TractorRobot(entity_id, self.model)
+            robot = TractorRobot(entity_id, self.model,
+                                 accent=self.accents.get(entity_id))
             robot.build(stage, position, heading)
             self.robots[entity_id] = robot
 
-        self._build_camera(stage, tractors, chargers)
+        self.tasks = dict(tasks or {})
+        self._task_drawn.clear()
+        self.unknown_tasks = []
+        for task_id, task in sorted(self.tasks.items()):
+            self._build_task(stage, task_id, task)
+
+        self._build_camera(stage, tractors, chargers, list(self.tasks.values()))
 
     def _charging_centre(self, chargers: List[Dict[str, Any]]) -> Tuple[float, float]:
         """Middle of the charging area, or the field middle when there is none."""
@@ -129,7 +196,11 @@ class HarvestWorld:
 
         xs = [_xy(e.get("home") or e.get("pose"))[0] for e in placed] or [50.0]
         ys = [_xy(e.get("home") or e.get("pose"))[1] for e in placed] or [50.0]
-        margin = 25.0
+        # A GENEROUS margin, because the edge of this box is the edge of the
+        # world: a vehicle that overshoots a turn near the boundary would drive
+        # off solid ground and fall for ever.  Measured once, with a 25 m margin
+        # and an unstable controller.
+        margin = 60.0
         x0, x1 = min(xs) - margin, max(xs) + margin
         y0, y1 = min(ys) - margin, max(ys) + margin
         width, depth = x1 - x0, y1 - y0
@@ -208,8 +279,127 @@ class HarvestWorld:
         }
         self._charger_active[charger_id] = False
 
+    def _build_task(self, stage, task_id: str, task: Dict[str, Any]) -> None:
+        """One task marker: work zone, pole, sign, assignment flag, beam.
+
+        Visual only -- no colliders anywhere in here.  A tractor has to be able
+        to drive onto its work zone, and a marker that could be bumped into
+        would turn HARVEST's schedule into an obstacle course.
+        """
+        from pxr import Gf, UsdGeom                          # noqa: PLC0415
+
+        position = _xy(task.get("location"))
+        radius = max(2.0, float(task.get("work_radius_m", 6.0)))
+        base = f"/World/Tasks/{task_id}"
+        UsdGeom.Xform.Define(stage, base)
+
+        # The work zone IS the radius HARVEST sent: what you see is the area
+        # the tractor actually has to reach for the task to count as started.
+        zone = UsdGeom.Cylinder.Define(stage, f"{base}/zone")
+        zone.CreateRadiusAttr(radius)
+        zone.CreateHeightAttr(0.08)
+        zone.CreateAxisAttr("Z")
+        zone.AddTranslateOp().Set(Gf.Vec3d(position[0], position[1], 0.05))
+
+        pole = UsdGeom.Cylinder.Define(stage, f"{base}/pole")
+        pole.CreateRadiusAttr(TASK_POLE_RADIUS)
+        pole.CreateHeightAttr(TASK_POLE_HEIGHT)
+        pole.CreateAxisAttr("Z")
+        pole.AddTranslateOp().Set(
+            Gf.Vec3d(position[0], position[1], TASK_POLE_HEIGHT / 2.0))
+        pole.CreateDisplayColorAttr([Gf.Vec3f(0.62, 0.62, 0.64)])
+
+        sign = UsdGeom.Cube.Define(stage, f"{base}/sign")
+        sign.CreateSizeAttr(1.0)
+        sign.AddTranslateOp().Set(
+            Gf.Vec3d(position[0], position[1],
+                     TASK_POLE_HEIGHT + TASK_SIGN_SIZE[2] / 2.0))
+        sign.AddScaleOp().Set(Gf.Vec3f(*TASK_SIGN_SIZE))
+
+        # The flag carries the ASSIGNED TRACTOR's identity colour, so the pairing
+        # is readable from the spectator camera without any text.
+        flag = UsdGeom.Cube.Define(stage, f"{base}/flag")
+        flag.CreateSizeAttr(1.0)
+        flag.AddTranslateOp().Set(
+            Gf.Vec3d(position[0], position[1] + 0.5,
+                     TASK_POLE_HEIGHT - TASK_FLAG_SIZE[2]))
+        flag.AddScaleOp().Set(Gf.Vec3f(*TASK_FLAG_SIZE))
+
+        # A tall beam, shown ONLY for the task being travelled to or worked.
+        # This is what makes "where is the action" answerable across an 800 m
+        # field, and why everything else stays quiet.
+        beam = UsdGeom.Cube.Define(stage, f"{base}/beam")
+        beam.CreateSizeAttr(1.0)
+        beam.AddTranslateOp().Set(
+            Gf.Vec3d(position[0], position[1], TASK_BEAM_SIZE[2] / 2.0))
+        beam.AddScaleOp().Set(Gf.Vec3f(*TASK_BEAM_SIZE))
+
+        self._task_drawn[task_id] = {
+            "position": [position[0], position[1]],
+            "radius": radius,
+            "paths": {"zone": f"{base}/zone", "sign": f"{base}/sign",
+                      "flag": f"{base}/flag", "beam": f"{base}/beam"},
+            "state": None, "assigned": None, "emphasis": None,
+        }
+
+    def sync_tasks(self, tasks: Dict[str, Any]) -> None:
+        """Recolour the markers to match HARVEST's current task states.
+
+        Colour and visibility only.  No prim is created here, because this runs
+        while the stage is PLAYING and authoring geometry then invalidates the
+        PhysX views the vehicles are driven through.  A task id with no marker is
+        recorded in :attr:`unknown_tasks` and picked up by the next rebuild.
+        """
+        from pxr import Gf, UsdGeom                          # noqa: PLC0415
+        import isaacsim.core.experimental.utils.stage as stage_utils  # noqa: PLC0415
+
+        self.tasks = dict(tasks or {})
+        unknown = [tid for tid in self.tasks if tid not in self._task_drawn]
+        self.unknown_tasks = unknown
+        if not self._task_drawn:
+            return
+        stage = stage_utils.get_current_stage()
+
+        for task_id, drawn in self._task_drawn.items():
+            task = self.tasks.get(task_id)
+            state = str((task or {}).get("state") or "pending")
+            assigned = (task or {}).get("assigned_tractor")
+            emphasis = bool((task or {}).get("emphasis"))
+            if (drawn["state"] == state and drawn["assigned"] == assigned
+                    and drawn["emphasis"] == emphasis):
+                continue          # nothing changed; touch no USD attribute
+            drawn.update(state=state, assigned=assigned, emphasis=emphasis)
+
+            colour = TASK_COLORS.get(state, TASK_COLORS["pending"])
+            paths = drawn["paths"]
+            for key in ("zone", "sign"):
+                prim = stage.GetPrimAtPath(paths[key])
+                if prim:
+                    UsdGeom.Gprim(prim).GetDisplayColorAttr().Set(
+                        [Gf.Vec3f(*colour)])
+
+            flag_prim = stage.GetPrimAtPath(paths["flag"])
+            if flag_prim:
+                accent = self.accents.get(str(assigned)) if assigned else None
+                UsdGeom.Gprim(flag_prim).GetDisplayColorAttr().Set(
+                    [Gf.Vec3f(*(accent or (0.30, 0.30, 0.32)))])
+                UsdGeom.Imageable(flag_prim).CreateVisibilityAttr(
+                    "inherited" if accent else "invisible")
+
+            beam_prim = stage.GetPrimAtPath(paths["beam"])
+            if beam_prim:
+                UsdGeom.Gprim(beam_prim).GetDisplayColorAttr().Set(
+                    [Gf.Vec3f(*colour)])
+                UsdGeom.Imageable(beam_prim).CreateVisibilityAttr(
+                    "inherited" if emphasis else "invisible")
+
+    def task_position(self, task_id: Optional[str]) -> Optional[List[float]]:
+        drawn = self._task_drawn.get(str(task_id)) if task_id else None
+        return list(drawn["position"]) if drawn else None
+
     def _build_camera(self, stage, tractors: List[Dict[str, Any]],
-                      chargers: List[Dict[str, Any]]) -> None:
+                      chargers: List[Dict[str, Any]],
+                      tasks: Optional[List[Dict[str, Any]]] = None) -> None:
         """A fixed spectator camera framing the whole demonstration.
 
         The stream opens on this camera because a fresh stage's default viewport
@@ -217,7 +407,11 @@ class HarvestWorld:
         """
         from pxr import Gf, UsdGeom                          # noqa: PLC0415
 
+        # The tasks are framed too: on an 800 m farm a camera framed on the
+        # vehicles alone would leave most of the day's work off screen.
         points = [_xy(e.get("home") or e.get("pose")) for e in tractors + chargers]
+        points += [_xy(t.get("location")) for t in (tasks or [])
+                   if t.get("location")]
         if not points:
             points = [(50.0, 50.0)]
         cx = sum(p[0] for p in points) / len(points)

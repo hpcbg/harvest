@@ -78,7 +78,9 @@ models:
       # 18 km/h is the ZETRABOT-class road maximum from config.yaml; the demo
       # drives at the eco speed unless told otherwise.
       max_speed_mps: 5.0
-      max_yaw_rate_dps: 45.0
+      # Enough authority to pivot briskly on the spot; the controller caps
+      # forward speed to whatever the commanded yaw can physically sweep.
+      max_yaw_rate_dps: 50.0
       drive_damping: 100000.0
       drive_max_force: 100000.0
     colors:

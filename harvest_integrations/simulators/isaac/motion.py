@@ -24,7 +24,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from .contract import DEFAULT_DOCK_RADIUS_M, DEFAULT_SPEED_MPS, physical_state
+from .contract import (DEFAULT_DOCK_RADIUS_M, DEFAULT_SPEED_MPS, activity,
+                       physical_state)
 
 
 @dataclass
@@ -40,6 +41,20 @@ class SimEntity:
     power_kw: float = 0.0
     moving: bool = False
     extras: Dict[str, Any] = field(default_factory=dict)
+    # ---- HARVEST task execution (goals in, progress out) --------------------
+    # None of this is a decision: the task id, the work radius and the number of
+    # seconds all arrive from HARVEST in the command message.  What lives here is
+    # a stopwatch and a distance test.
+    activity_kind: str = "idle"                  # "task" | "charging" | "idle"
+    task_id: Optional[str] = None
+    work_seconds: float = 0.0
+    work_radius_m: float = 6.0
+    at_task: bool = False
+    work_started: Optional[float] = None         # time.monotonic()
+    task_progress_pct: float = 0.0
+    transit_progress_pct: float = 0.0
+    task_complete: bool = False
+    start_distance_m: Optional[float] = None
 
 
 class FieldKinematics:
@@ -69,11 +84,34 @@ class FieldKinematics:
             ent = self.entities.get(str(tid))
             if ent is None or ent.kind != "tractor":
                 continue
-            target = goal.get("target")
-            ent.target = [float(target[0]), float(target[1])] if target else None
             ent.docked_charger = goal.get("docked_charger")
             ent.charging = bool(goal.get("charging"))
             ent.extras["soc_pct"] = goal.get("soc_pct")
+            ent.activity_kind = str(goal.get("activity") or "idle")
+            task_id = goal.get("task_id")
+            if task_id != ent.task_id:
+                # A new assignment (or none): the stopwatch restarts.  Driven
+                # entirely by HARVEST -- nothing here ever decides that a task
+                # is over and moves on to another.
+                ent.task_id = task_id
+                ent.at_task = False
+                ent.work_started = None
+                ent.task_progress_pct = 0.0
+                ent.transit_progress_pct = 0.0
+                ent.task_complete = False
+                ent.start_distance_m = None
+            ent.work_seconds = float(goal.get("work_seconds", 0.0) or 0.0)
+            ent.work_radius_m = float(
+                goal.get("work_radius_m", self.dock_radius_m) or self.dock_radius_m)
+            target = goal.get("target")
+            # Idle means HOLD, matching the Isaac backend: after finishing a task
+            # the tractor is physically at it, and driving back to HARVEST's
+            # stale semantic position would be motion nobody asked for.
+            if ent.activity_kind == "idle":
+                ent.target = None
+            else:
+                ent.target = ([float(target[0]), float(target[1])]
+                              if target else None)
 
         for cid, state in (cmd.get("chargers") or {}).items():
             ent = self.entities.get(str(cid))
@@ -104,20 +142,57 @@ class FieldKinematics:
     def step(self, dt_s: float) -> None:
         self.sim_time_s += max(0.0, dt_s)
         for ent in self.entities.values():
-            if ent.kind != "tractor" or not ent.target:
+            if ent.kind != "tractor":
                 continue
-            dx = ent.target[0] - ent.pose[0]
-            dy = ent.target[1] - ent.pose[1]
-            dist = math.hypot(dx, dy)
-            step = self.speed_mps * dt_s
-            if dist <= max(step, 1e-6):
-                ent.pose = [float(ent.target[0]), float(ent.target[1])]
-                ent.moving = False
-            else:
-                ent.pose[0] += dx / dist * step
-                ent.pose[1] += dy / dist * step
-                ent.heading_deg = math.degrees(math.atan2(dy, dx))
-                ent.moving = True
+            self._advance_motion(ent, dt_s)
+            self._advance_work(ent)
+
+    def _advance_motion(self, ent: SimEntity, dt_s: float) -> None:
+        if not ent.target:
+            ent.moving = False
+            return
+        # Stop at the work radius when driving to a TASK, not at its exact
+        # centre: the radius is HARVEST's definition of "there", and the Isaac
+        # backend arrives on the same number.  A charger is still approached
+        # exactly -- the tractor parks on the pad, and `_docked` already has the
+        # dock radius for deciding whether it counts as connected.
+        arrival = ent.work_radius_m if ent.activity_kind == "task" else 0.0
+        dx = ent.target[0] - ent.pose[0]
+        dy = ent.target[1] - ent.pose[1]
+        dist = math.hypot(dx, dy)
+        if dist <= max(arrival, 1e-6):
+            ent.moving = False
+            return
+        step = self.speed_mps * dt_s
+        if dist <= max(step, 1e-6):
+            ent.pose = [float(ent.target[0]), float(ent.target[1])]
+            ent.moving = False
+        else:
+            ent.pose[0] += dx / dist * step
+            ent.pose[1] += dy / dist * step
+            ent.heading_deg = math.degrees(math.atan2(dy, dx))
+            ent.moving = True
+
+    def _advance_work(self, ent: SimEntity) -> None:
+        """Execute the work HARVEST assigned: a distance test and a stopwatch."""
+        if ent.activity_kind != "task" or not ent.task_id or not ent.target:
+            ent.at_task = False
+            return
+        dist = math.hypot(ent.target[0] - ent.pose[0], ent.target[1] - ent.pose[1])
+        if ent.start_distance_m is None:
+            ent.start_distance_m = max(dist, ent.work_radius_m)
+        span = max(1e-6, ent.start_distance_m - ent.work_radius_m)
+        ent.transit_progress_pct = max(0.0, min(
+            100.0, (1.0 - (dist - ent.work_radius_m) / span) * 100.0))
+        if dist <= ent.work_radius_m and not ent.moving:
+            ent.at_task = True
+            if ent.work_started is None:
+                ent.work_started = time.monotonic()
+        if ent.work_started is not None:
+            seconds = max(1.0, ent.work_seconds or 30.0)
+            elapsed = time.monotonic() - ent.work_started
+            ent.task_progress_pct = min(100.0, elapsed / seconds * 100.0)
+            ent.task_complete = ent.task_progress_pct >= 100.0
 
     # -- reporting ------------------------------------------------------------
     def _docked(self, ent: SimEntity) -> bool:
@@ -157,6 +232,15 @@ class FieldKinematics:
                     "physical_state": physical_state(
                         moving=ent.moving, docked=docked, charging=ent.charging),
                     "distance_to_target_m": round(self.distance_to_target(ent), 2),
+                    # ---- the task half, reported the same way Isaac does -----
+                    "activity": activity(
+                        task_id=ent.task_id, at_task=ent.at_task,
+                        charging=ent.charging, moving=ent.moving),
+                    "task_id": ent.task_id,
+                    "at_task": ent.at_task,
+                    "transit_progress_pct": round(ent.transit_progress_pct, 1),
+                    "task_progress_pct": round(ent.task_progress_pct, 1),
+                    "task_complete": ent.task_complete,
                 })
             else:
                 row.update({"active": ent.active,

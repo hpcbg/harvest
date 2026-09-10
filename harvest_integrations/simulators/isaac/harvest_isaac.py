@@ -14,10 +14,18 @@ the installation, scrubs and rebuilds the ROS environment and settles the
 viewing mode (see that script and README.md here for why each step is
 load-bearing).
 
-WHAT THIS PROCESS IS RESPONSIBLE FOR, and nothing else: receiving latched scene
-and goal commands on ``/harvest/sim/command`` (schema harvest-sim/1.0), building
-the demonstration field, DRIVING the tractors there with wheel torques, and
-publishing MEASURED poses, motion and docking on ``/harvest/sim/telemetry``.
+WHAT THIS PROCESS IS RESPONSIBLE FOR, and nothing else: receiving latched scene,
+goal and TASK commands on ``/harvest/sim/command`` (schema harvest-sim/1.1),
+building the demonstration field, DRAWING HARVEST's tasks where they are,
+DRIVING the tractors to them with wheel torques, running the work for as long as
+HARVEST said it takes, and publishing MEASURED poses, motion, docking and task
+progress on ``/harvest/sim/telemetry``.
+
+IT DOES NOT SCHEDULE.  Which tractor does which task, in what order, by when and
+whether a task is finished are HARVEST's answers (``harvest_integrations/tasks.py``
+driving ``main.Scheduler``).  This process is told a location, a work radius and
+a number of seconds; it reports where the tractor got to and how far through the
+work it is, and HARVEST decides what that means.
 
 HARVEST remains authoritative for everything that is not physics: battery SOC,
 the energy model, charging schedules and decisions, task scheduling, prices, PV,
@@ -44,6 +52,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 # The contract, the kinematics helpers, the robot registry and the streaming
 # configuration are imported from the repository by path: Isaac's interpreter has
@@ -62,6 +71,23 @@ _VERSION = "harvest-isaac/2.0"
 #: A tractor counts as stopped below this speed.  Physics never settles at
 #: exactly zero: the wheels keep micro-rolling against the ground.
 _STOPPED_MPS = 0.15
+
+#: How many consecutive frames a tractor must be inside its work zone AND slow
+#: before the work starts.  The articulation's instantaneous linear velocity is
+#: NOISY -- measured on the live farm, a tractor making steady 3 m/s progress
+#: reported 0.8, 0.8, 3.5, 1.9, 0.5 m/s on consecutive samples -- so a single
+#: low reading is not evidence of having stopped, and acting on one would let a
+#: tractor start "working" while still driving through the zone.
+_ARRIVAL_FRAMES = 8
+
+#: Beacon colour per activity, so the stream answers "what is this one doing?"
+#: without a caption.  Matches the task-marker palette in scene.py.
+_ACTIVITY_COLOURS = {
+    "idle":       (0.55, 0.58, 0.62),
+    "travelling": (0.98, 0.62, 0.05),
+    "working":    (0.15, 0.95, 0.30),
+    "charging":   (0.20, 0.55, 0.95),
+}
 
 
 def _parse_args() -> argparse.Namespace:
@@ -151,14 +177,17 @@ def main() -> int:                                     # noqa: PLR0915, PLR0912
 
     world = HarvestWorld(model)
     world_problems: list = []
+    world_scene: dict = {}
     attached = 0
 
-    def build_world(scene: dict, fingerprint: str) -> None:
+    def build_world(scene: dict, fingerprint: str,
+                    tasks: Optional[dict] = None) -> None:
         """Stop, rebuild, play, re-bind.  The only way the stage changes shape."""
-        nonlocal attached, world_problems
+        nonlocal attached, world_problems, world_scene
+        world_scene = scene
         app_utils.stop()
         simulation_app.update()
-        world.build(scene, fingerprint)
+        world.build(scene, fingerprint, tasks)
         app_utils.play()
         # A few updates before binding: PhysX publishes its articulation views
         # on the first simulation steps after play, and Articulation() on an
@@ -170,7 +199,8 @@ def main() -> int:                                     # noqa: PLR0915, PLR0912
             print(f"{_LOG} WARNING: {problem}", file=sys.stderr, flush=True)
         print(f"{_LOG} scene applied: {len(world.robots)} tractors "
               f"({attached} driveable), {len(world.chargers)} chargers, "
-              f"fingerprint {fingerprint}", flush=True)
+              f"{len(world.tasks)} task markers, fingerprint {fingerprint}",
+              flush=True)
 
     # ---- the self-test that needs no ROS at all -----------------------------
     if args.self_test_drive:
@@ -200,6 +230,12 @@ def main() -> int:                                     # noqa: PLR0915, PLR0912
     started_ts = time.time()
     goals: dict = {}
     charger_states: dict = {}
+    task_goals: dict = {}
+    #: Per-tractor work execution: which task is being worked, when the work
+    #: started and whether it finished.  This is the ONLY task state this
+    #: process keeps, and it is execution, not scheduling: a stopwatch against
+    #: the number of seconds HARVEST said the work takes.
+    work: dict = {}
 
     def telemetry_entities() -> dict:
         """Per-entity physical state, MEASURED from the simulated bodies.
@@ -211,6 +247,7 @@ def main() -> int:                                     # noqa: PLR0915, PLR0912
         out: dict = {}
         for rid, robot in world.robots.items():
             goal = goals.get(rid) or {}
+            state = work.get(rid) or {}
             charger_id = goal.get("docked_charger")
             charger_pose = world.charger_pose(charger_id)
             distance_to_charger = (
@@ -246,6 +283,18 @@ def main() -> int:                                     # noqa: PLR0915, PLR0912
                                           if distance_to_charger is not None else None),
                 "drive": robot.last_command.reason,
                 "driveable": robot.ready,
+                # ---- the task half, all of it MEASURED or counted here ------
+                "activity": contract.activity(
+                    task_id=state.get("task_id"),
+                    at_task=bool(state.get("at_task")),
+                    charging=bool(goal.get("charging")), moving=moving),
+                "task_id": state.get("task_id"),
+                "at_task": bool(state.get("at_task")),
+                "transit_progress_pct": round(
+                    float(state.get("transit_progress_pct", 0.0)), 1),
+                "task_progress_pct": round(
+                    float(state.get("progress_pct", 0.0)), 1),
+                "task_complete": bool(state.get("complete")),
             }
             if robot.attach_error:
                 out[rid]["error"] = robot.attach_error
@@ -265,6 +314,8 @@ def main() -> int:                                     # noqa: PLR0915, PLR0912
             "entities_synced": len(entities),
             "tractors_synced": len(world.robots),
             "tractors_driveable": attached,
+            "tasks_drawn": len(world.tasks),
+            "tasks_working": sum(1 for st in work.values() if st.get("at_task")),
             "sim_time_s": round(time.time() - started_ts, 1),
             "uptime_s": round(time.time() - started_ts, 1),
         }
@@ -317,23 +368,98 @@ def main() -> int:                                     # noqa: PLR0915, PLR0912
                     continue
                 scene = command.get("scene")
                 fingerprint = str(command.get("scene_fingerprint") or "")
+                task_goals = dict(command.get("tasks") or {})
                 if scene and fingerprint != world.fingerprint:
-                    build_world(scene, fingerprint)
+                    build_world(scene, fingerprint, task_goals)
                 goals = dict(command.get("goals") or {})
                 charger_states = dict(command.get("chargers") or {})
-                for cid, state in charger_states.items():
-                    world.set_charger_active(cid, bool(state.get("active")))
+                for cid, charger in charger_states.items():
+                    world.set_charger_active(cid, bool(charger.get("active")))
+                world.sync_tasks(task_goals)
+                if world.unknown_tasks and world.fingerprint:
+                    # A task with no marker would be an invisible piece of the
+                    # schedule.  Rebuild once, on the stopped stage, rather than
+                    # authoring geometry into a playing one.
+                    print(f"{_LOG} {len(world.unknown_tasks)} new task(s) "
+                          f"without markers — rebuilding the stage", flush=True)
+                    build_world(world_scene, world.fingerprint, task_goals)
                 publish_telemetry("running")
 
-            # ---- physics-in-the-loop: measure, then steer ------------------
+            # ---- physics-in-the-loop: measure, steer, work -----------------
+            now_wall = time.time()
             for rid, robot in world.robots.items():
                 robot.measure()
                 goal = goals.get(rid) or {}
+                activity_kind = str(goal.get("activity") or "idle")
+                task_id = goal.get("task_id")
                 target = goal.get("target")
-                robot.drive_towards(
-                    (float(target[0]), float(target[1])) if target else None,
-                    arrival_radius_m=args.dock_radius,
-                    speed_mps=args.speed)
+
+                state = work.get(rid)
+                if state is None or state.get("task_id") != task_id:
+                    # A new assignment (or none): the stopwatch restarts.  Note
+                    # this is driven entirely by what HARVEST sent -- the
+                    # simulator never decides that a task is over and picks
+                    # another.
+                    state = {"task_id": task_id, "started": None,
+                             "at_task": False, "progress_pct": 0.0,
+                             "transit_progress_pct": 0.0, "complete": False,
+                             "start_distance_m": None, "settled": 0}
+                    work[rid] = state
+
+                if activity_kind == "task" and task_id and target:
+                    radius = float(goal.get("work_radius_m", args.dock_radius))
+                    distance = math.hypot(target[0] - robot.pose[0],
+                                          target[1] - robot.pose[1])
+                    if state["start_distance_m"] is None:
+                        state["start_distance_m"] = max(distance, radius)
+                    span = max(1e-6, state["start_distance_m"] - radius)
+                    state["transit_progress_pct"] = max(
+                        0.0, min(100.0, (1.0 - (distance - radius) / span) * 100.0))
+                    # ARRIVAL IS MEASURED, and it needs the vehicle to have
+                    # actually settled inside the zone: a tractor still rolling
+                    # through at 4 m/s has not arrived anywhere, and one noisy
+                    # low velocity sample is not proof that it stopped.
+                    if distance <= radius and robot.speed_mps <= _STOPPED_MPS:
+                        state["settled"] = state.get("settled", 0) + 1
+                    elif distance > radius:
+                        state["settled"] = 0
+                    if state["settled"] >= _ARRIVAL_FRAMES:
+                        state["at_task"] = True
+                        if state["started"] is None:
+                            state["started"] = now_wall
+                            print(f"{_LOG} {rid} reached {task_id} "
+                                  f"({distance:.1f} m from its centre) — "
+                                  f"working", flush=True)
+                    if state["started"] is not None:
+                        # The work period is HARVEST's number, counted here.
+                        seconds = max(1.0, float(goal.get("work_seconds", 30.0)))
+                        elapsed = now_wall - state["started"]
+                        state["progress_pct"] = min(100.0, elapsed / seconds * 100.0)
+                        if state["progress_pct"] >= 100.0 and not state["complete"]:
+                            state["complete"] = True
+                            print(f"{_LOG} {rid} finished the work at {task_id} "
+                                  f"after {elapsed:.0f}s — reporting completion",
+                                  flush=True)
+                elif activity_kind == "charging":
+                    state["at_task"] = False
+
+                # HOLD when idle rather than chasing HARVEST's semantic
+                # position: after finishing a task the tractor is physically at
+                # that task, and driving it back to a stale reported coordinate
+                # would be motion nobody asked for.
+                drive_target = None
+                if activity_kind in ("task", "charging") and target:
+                    drive_target = (float(target[0]), float(target[1]))
+                arrival = (float(goal.get("work_radius_m", args.dock_radius))
+                           if activity_kind == "task" else args.dock_radius)
+                robot.drive_towards(drive_target, arrival_radius_m=arrival,
+                                    speed_mps=args.speed)
+                robot.set_activity_colour(_ACTIVITY_COLOURS.get(
+                    contract.activity(task_id=state.get("task_id"),
+                                      at_task=bool(state.get("at_task")),
+                                      charging=bool(goal.get("charging")),
+                                      moving=robot.speed_mps > _STOPPED_MPS),
+                    _ACTIVITY_COLOURS["idle"]))
 
             if time.time() - last_telemetry >= _TELEMETRY_PERIOD_S:
                 publish_telemetry("running" if world.fingerprint else "starting")
@@ -369,11 +495,18 @@ def _self_test_drive(simulation_app, app_utils, world, build_world, args,
     joint whose axis is wrong.  It reports MEASURED displacement and speed, and
     fails if the tractor did not get appreciably closer to its target.
     """
+    # A LONG DRIVE WITH THE TARGET BEHIND THE VEHICLE, deliberately: the short
+    # forward hop this test used to do passed while the controller was unable to
+    # turn at speed, and on the live farm the tractors then arced away from their
+    # tasks and one drove off the field.  The vehicle spawns pointing at the
+    # charging area and is sent 300 m the other way, so it must pivot, cross the
+    # field and stop.
     scene = {
-        "field": {"width": 90.0, "height": 90.0},
+        "field": {"width": 400.0, "height": 400.0},
         "entities": [
             {"id": "tractor_selftest", "kind": "tractor", "home": [70.0, 50.0]},
             {"id": "charger_selftest", "kind": "charger", "pose": [40.0, 40.0]},
+            {"id": "task_selftest", "kind": "charger", "pose": [330.0, 260.0]},
         ],
     }
     build_world(scene, "selftest")
@@ -384,7 +517,7 @@ def _self_test_drive(simulation_app, app_utils, world, build_world, args,
         simulation_app.close()
         return 5
 
-    target = tuple(world.charger_pose("charger_selftest") or (40.0, 40.0))
+    target = tuple(world.charger_pose("task_selftest") or (330.0, 260.0))
     robot.measure()
     start_pose = robot.pose
     start_distance = math.hypot(target[0] - start_pose[0],
@@ -441,9 +574,11 @@ def _self_test_drive(simulation_app, app_utils, world, build_world, args,
           f"{robot.articulation.link_names} joints={robot.articulation.num_joints}",
           flush=True)
 
-    deadline = time.time() + 60.0
+    # Long enough for 300 m at a believable field speed, plus the pivot.
+    started_at = time.time()
+    deadline = started_at + 180.0
     top_speed = 0.0
-    report_at = time.time() + 2.0
+    report_at = started_at + 2.0
     while time.time() < deadline:
         simulation_app.update()
         robot.measure()
@@ -453,7 +588,7 @@ def _self_test_drive(simulation_app, app_utils, world, build_world, args,
         remaining = math.hypot(target[0] - robot.pose[0],
                                target[1] - robot.pose[1])
         if time.time() >= report_at:
-            _drive_report(f"t+{60.0 - (deadline - time.time()):.0f}s")
+            _drive_report(f"t+{time.time() - started_at:.0f}s")
             report_at = time.time() + 10.0
         if remaining <= args.dock_radius:
             break
@@ -468,11 +603,15 @@ def _self_test_drive(simulation_app, app_utils, world, build_world, args,
     if docked:
         print(f"{_LOG} self-test-drive ok -- physically docked", flush=True)
     elif travelled > 2.0:
-        print(f"{_LOG} self-test-drive ok -- moved under physics but did not "
-              f"reach the charger within 60 s", flush=True)
+        print(f"{_LOG} self-test-drive INCOMPLETE -- moved {travelled:.0f} m "
+              f"under physics but did not reach the target, {remaining:.0f} m "
+              f"short.  The controller is not converging.", file=sys.stderr,
+              flush=True)
+        simulation_app.close()
+        return 5
     else:
         print(f"{_LOG} self-test-drive FAILED: the tractor did not move "
-              f"({travelled:.2f} m in 60 s)", file=sys.stderr, flush=True)
+              f"({travelled:.2f} m)", file=sys.stderr, flush=True)
         simulation_app.close()
         return 5
     simulation_app.close()

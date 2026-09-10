@@ -80,6 +80,35 @@ def _get_fleet_runtime():
             _FLEET_RUNTIME = FleetRuntime(cfg)
         return _FLEET_RUNTIME
 
+
+# ── Live task service ─────────────────────────────────────────────────────────
+# HARVEST's task layer for the live stack: it reuses main.build_simulation_config
+# to CREATE the tasks and main.Scheduler to ASSIGN them, and turns the physical
+# simulator's reports into task-phase transitions.  Created lazily with the fleet
+# runtime it drives, and reported as unavailable rather than faked when the
+# simulation module cannot be imported (the host numpy/matplotlib quirk).
+_TASK_SERVICE = None
+_TASK_SERVICE_ERROR = ""
+
+
+def _get_task_service():
+    global _TASK_SERVICE, _TASK_SERVICE_ERROR
+    if not _FLEET_AVAILABLE:
+        return None
+    runtime = _get_fleet_runtime()
+    if runtime is None:
+        return None
+    with _FLEET_LOCK:
+        if _TASK_SERVICE is None and not _TASK_SERVICE_ERROR:
+            try:
+                from harvest_integrations.tasks import LiveTaskService
+                cfg = load_yaml_with_local(CONFIG_FILE)
+                _TASK_SERVICE = LiveTaskService(cfg, runtime)
+            except Exception as exc:                       # noqa: BLE001
+                _TASK_SERVICE_ERROR = f"{type(exc).__name__}: {exc}"
+                _TASK_SERVICE = None
+        return _TASK_SERVICE
+
 # ── Operations-run store ──────────────────────────────────────────────────────
 # Single-user local dashboard: retaining only the latest successful Operations run
 # in memory is sufficient.  ROI must be based strictly on this run.
@@ -324,13 +353,42 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_json(runtime.status())
 
+        elif path == "/api/tasks":
+            # HARVEST's live task document: what work exists, who has it, how far
+            # through it is, and which layer is executing it.  Read-only; every
+            # decision in here was made by main.Scheduler.
+            service = _get_task_service()
+            if service is None:
+                self._send_json({"error": "task service unavailable"
+                                 + (f": {_TASK_SERVICE_ERROR}"
+                                    if _TASK_SERVICE_ERROR else "")}, 501)
+            else:
+                try:
+                    self._send_json(service.document())
+                except Exception as e:
+                    self._send_json({"error": f"task document failed: {e}"}, 500)
+
+        elif path == "/api/tasks/goals":
+            # The subset the simulator needs (locations, states, work seconds).
+            # Separate from /api/tasks so the ROS 2 bridge polls a small, stable
+            # document rather than the whole schedule.
+            service = _get_task_service()
+            if service is None:
+                self._send_json({"error": "task service unavailable"}, 501)
+            else:
+                try:
+                    self._send_json(service.task_goals())
+                except Exception as e:
+                    self._send_json({"error": f"task goals failed: {e}"}, 500)
+
         elif path == "/api/diagnostics":
             if not _FLEET_AVAILABLE:
                 self._send_json({"error": "harvest_integrations not available"}, 501)
             else:
                 try:
                     runtime = _get_fleet_runtime()
-                    self._send_json(fleet_diag.collect(runtime, _CLIENTS))
+                    self._send_json(fleet_diag.collect(
+                        runtime, _CLIENTS, _get_task_service()))
                 except Exception as e:
                     self._send_json({"error": f"diagnostics failed: {e}"}, 500)
 
@@ -370,6 +428,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_demo_start()
         elif path == "/api/integrations/status":
             self._handle_integrations_status()
+        elif path == "/api/tasks/progress":
+            self._handle_task_progress()
         else:
             self._send_json({"error": "unknown endpoint"}, 404)
 
@@ -443,6 +503,28 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"started": True})
         else:
             self._send_json({"error": "demo already running"}, 409)
+
+    def _handle_task_progress(self):
+        """POST /api/tasks/progress — the simulator reports what physically happened.
+
+        EVIDENCE, NOT INSTRUCTION.  A report says where a tractor is, whether it
+        has reached its work zone and how far through the work it is; it cannot
+        create, assign, reassign or cancel a task, and a report about a task the
+        tractor was not given is ignored.  HARVEST still declares completion.
+        """
+        try:
+            payload = self._read_payload()
+        except Exception as e:
+            self._send_json({"error": f"bad request: {e}"}, 400)
+            return
+        service = _get_task_service()
+        if service is None:
+            self._send_json({"error": "task service unavailable"}, 501)
+            return
+        try:
+            self._send_json(service.report_physical(payload))
+        except Exception as e:
+            self._send_json({"error": f"task progress failed: {e}"}, 500)
 
     def _handle_integrations_status(self):
         """POST /api/integrations/status — a daemon pushes its status blob.

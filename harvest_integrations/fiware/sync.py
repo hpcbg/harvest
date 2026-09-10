@@ -41,6 +41,7 @@ from .entities import (
     command_entity,
     parse_command_value,
     simulation_entity,
+    task_board_entity,
     snapshot_to_entities,
 )
 
@@ -73,6 +74,10 @@ class HarvestApiClient:
 
     def integrations_status(self) -> Dict[str, Any]:
         return self._json("GET", "/api/integrations/status")
+
+    def tasks(self):
+        """HARVEST's live task document, or None when the service is absent."""
+        return self._json("GET", "/api/tasks")
 
 
 # --------------------------------------------------------------------------- #
@@ -149,6 +154,7 @@ class ContextSync:
         from harvest_integrations.codec import snapshot_from_dict
         entities = snapshot_to_entities(snapshot_from_dict(snap))
         entities.extend(self._simulation_entities())
+        entities.extend(self._task_entities())
         self.broker.upsert_entities(entities)
         self.cycles += 1
         return len(entities)
@@ -166,6 +172,21 @@ class ContextSync:
         if not info or info.get("age_s", 1e9) > 30.0:
             return []
         return [simulation_entity(info.get("status") or {})]
+
+    def _task_entities(self) -> list:
+        """Mirror HARVEST's task board, when the task service is running.
+
+        Optional like the simulator layer: a HARVEST without the task service
+        returns 501 and this mirrors nothing, rather than leaving a stale board
+        in the broker claiming work that no longer exists.
+        """
+        try:
+            document = self.harvest.tasks()
+        except Exception:
+            return []
+        if not isinstance(document, dict) or "counts" not in document:
+            return []
+        return [task_board_entity(document)]
 
     def poll_inbound(self) -> None:
         entity = self.broker.get_entity(COMMAND_ENTITY_ID)

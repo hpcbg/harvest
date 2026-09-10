@@ -201,11 +201,13 @@ def _observed_age_s(observed_at: Optional[str]) -> Optional[float]:
 # --------------------------------------------------------------------------- #
 #  The collector
 # --------------------------------------------------------------------------- #
-def collect(runtime, clients: ClientRegistry) -> Dict[str, Any]:
+def collect(runtime, clients: ClientRegistry, tasks: Any = None) -> Dict[str, Any]:
     """Build the full diagnostics document.
 
     ``runtime`` is the live :class:`FleetRuntime` (may be ``None`` when
     harvest_integrations could not be created — reported, not raised).
+    ``tasks`` is the optional :class:`~harvest_integrations.tasks.LiveTaskService`;
+    absent, the farm-tasks row says so rather than disappearing.
     """
     now = time.time()
     services: List[Dict[str, Any]] = []
@@ -317,6 +319,10 @@ def collect(runtime, clients: ClientRegistry) -> Dict[str, Any]:
     name, state, detail, extra = _isaac_row(clients)
     svc(name, state, detail, **extra)
 
+    # Farm tasks: HARVEST's own work schedule, and which layer is executing it.
+    name, state, detail, extra = _tasks_row(tasks)
+    svc(name, state, detail, **extra)
+
     return {
         "ts": now,
         "services": services,
@@ -372,6 +378,53 @@ def _isaac_row(clients: ClientRegistry) -> tuple[str, str, str, Dict[str, Any]]:
         return (name, FAILED, f"{kind} reported an error — {detail}", extra)
     # A stand-in must read as deliberate simulation, never as a live Isaac.
     return (name, SIMULATED if kind == "stub" else HEALTHY, detail, extra)
+
+
+def _tasks_row(service: Any) -> tuple[str, str, str, Dict[str, Any]]:
+    """The farm-tasks row: what work exists, who has it, who is executing it.
+
+    HEALTHY when HARVEST's scheduler is running the task layer.  The row states
+    plainly whether execution is driven by the PHYSICAL simulator (Isaac has the
+    tractor at the work zone and is reporting progress) or by HARVEST's own clock
+    (no simulator connected) — the same honesty rule as everywhere else here: a
+    clock-driven task must not read as a physically executed one.
+    """
+    name = "Farm tasks"
+    if service is None:
+        return (name, INACTIVE,
+                "task service not running — optional (needs the simulation "
+                "module; see harvest_integrations/tasks.py)", {})
+    try:
+        document = service.document()
+        lines = service.summary_lines()
+    except Exception as exc:                                   # noqa: BLE001
+        return (name, FAILED, f"task service error: {exc}", {})
+
+    counts = document.get("counts") or {}
+    execution = str(document.get("execution") or "?")
+    detail = (f"{document.get('clock', '?')} — "
+              + ", ".join(f"{counts.get(k, 0)} {k}"
+                          for k in ("active", "assigned", "pending",
+                                    "completed", "deferred", "missed"))
+              + f"; executed by {execution}")
+    facts = [f"scheduler: {document.get('scheduler', '?')} — HARVEST decides "
+             "assignment, priorities and completion"]
+    if execution == "physical":
+        facts.append(f"execution: physical, reported by "
+                     f"{document.get('physical_source') or 'the simulator'}")
+    else:
+        facts.append("execution: HARVEST's clock (no simulator reporting "
+                     "physical progress)")
+    facts.extend(lines)
+    if document.get("last_error"):
+        facts.append(f"problem: {document['last_error']}")
+    extra: Dict[str, Any] = {"facts": facts, "tasks": {
+        "counts": counts, "execution": execution,
+        "clock": document.get("clock"),
+        "assignments": document.get("assignments") or {}}}
+    # A task layer that has fallen behind its own clock is a real fault, but a
+    # farm with nothing due is not: only an error makes this row unhealthy.
+    return (name, HEALTHY, detail, extra)
 
 
 #: How many tractors get their own line before the list is summarised.  This is
