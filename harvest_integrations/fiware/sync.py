@@ -42,6 +42,7 @@ from .entities import (
     parse_command_value,
     simulation_entity,
     task_board_entity,
+    telemetry_entities,
     snapshot_to_entities,
 )
 
@@ -78,6 +79,10 @@ class HarvestApiClient:
     def tasks(self):
         """HARVEST's live task document, or None when the service is absent."""
         return self._json("GET", "/api/tasks")
+
+    def telemetry(self):
+        """The real-telemetry document (state 'inactive' when no source is set)."""
+        return self._json("GET", "/api/telemetry")
 
 
 # --------------------------------------------------------------------------- #
@@ -155,9 +160,25 @@ class ContextSync:
         entities = snapshot_to_entities(snapshot_from_dict(snap))
         entities.extend(self._simulation_entities())
         entities.extend(self._task_entities())
+        entities.extend(self._telemetry_entities())
         self.broker.upsert_entities(entities)
         self.cycles += 1
         return len(entities)
+
+    def _telemetry_entities(self) -> list:
+        """Mirror the real ZETRABOT telemetry, when a source is configured.
+
+        Optional like the other two: with no source HARVEST answers state
+        'inactive' and nothing is mirrored -- no stale TractorTelemetry
+        entity may claim a robot is reporting when nothing is.
+        """
+        try:
+            document = self.harvest.telemetry()
+        except Exception:
+            return []
+        if not isinstance(document, dict) or not document.get("tractors"):
+            return []
+        return telemetry_entities(document)
 
     def _simulation_entities(self) -> list:
         """Mirror the optional Isaac Sim layer's state, when its bridge is

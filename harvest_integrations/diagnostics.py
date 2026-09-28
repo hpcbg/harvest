@@ -166,7 +166,7 @@ def _probe_entities() -> Optional[Dict[str, Any]]:
         base = orion_url()
         counts: Dict[str, int] = {}
         for etype in ("ElectricTractor", "ChargingStation", "EnergyConsumer",
-                      "FarmEnergySystem"):
+                      "FarmEnergySystem", "TractorTelemetry"):
             rows = _http_get_json(
                 f"{base}/ngsi-ld/v1/entities?type={etype}&limit=100&options=keyValues")
             if rows is None:
@@ -232,15 +232,18 @@ def collect(runtime, clients: ClientRegistry, tasks: Any = None) -> Dict[str, An
             svc("Fleet backend", FAILED, f"snapshot failed: {exc}")
             devices = []
         else:
+            # Real-telemetry rows are inbound data, not field devices: they
+            # must never count as unreachable devices or as a protocol adapter.
+            field_devices = [d for d in devices if d.get("layer") != "telemetry"]
             if status["backend"] == "devices":
-                unreachable = [d["id"] for d in devices if d["reachable"] is False]
+                unreachable = [d["id"] for d in field_devices if d["reachable"] is False]
                 if unreachable:
                     svc("Fleet backend", FAILED,
                         f"devices backend — unreachable: {', '.join(unreachable[:6])}",
                         backend="devices")
                 else:
                     svc("Fleet backend", HEALTHY,
-                        f"devices backend — {len(devices)} endpoints via Modbus/OPC-UA",
+                        f"devices backend — {len(field_devices)} endpoints via Modbus/OPC-UA",
                         backend="devices")
             else:
                 svc("Fleet backend", SIMULATED,
@@ -252,6 +255,8 @@ def collect(runtime, clients: ClientRegistry, tasks: Any = None) -> Dict[str, An
     if runtime is not None and runtime.status()["backend"] == "devices":
         by_proto: Dict[str, List[Dict[str, Any]]] = {}
         for d in devices:
+            if d.get("layer") == "telemetry":
+                continue        # reported by the "Real telemetry" row, not as an adapter
             by_proto.setdefault(d["protocol"], []).append(d)
         for proto, rows in sorted(by_proto.items()):
             ok = sum(1 for r in rows if r["reachable"])
@@ -323,13 +328,108 @@ def collect(runtime, clients: ClientRegistry, tasks: Any = None) -> Dict[str, An
     name, state, detail, extra = _tasks_row(tasks)
     svc(name, state, detail, **extra)
 
+    # Real ZETRABOT telemetry: the inbound data source (CSV replay today, AWS
+    # later).  Never "simulated": a replay is REAL data on its original
+    # timeline, and the row says so, with the source type and the mission.
+    telemetry_doc = _telemetry_document(runtime)
+    name, state, detail, extra = _telemetry_row(telemetry_doc)
+    svc(name, state, detail, **extra)
+
     return {
         "ts": now,
         "services": services,
         "devices": devices,
         "fleet": runtime.status() if runtime is not None else None,
         "demo": DEMO.status(),
+        "telemetry": telemetry_doc,
     }
+
+
+def _telemetry_document(runtime) -> Dict[str, Any]:
+    if runtime is None:
+        return {"state": "inactive", "tractors": [], "error": "", "source": None}
+    try:
+        return runtime.telemetry_document()
+    except Exception as exc:                                       # noqa: BLE001
+        return {"state": "failed", "tractors": [], "source": None,
+                "error": f"telemetry document failed: {exc}"}
+
+
+def _fmt(value: Any, unit: str = "", nd: int = 2) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (int, float)):
+        return f"{value:.{nd}f}{unit}"
+    return f"{value}{unit}"
+
+
+def _telemetry_row(doc: Dict[str, Any]) -> tuple[str, str, str, Dict[str, Any]]:
+    """The 'Real telemetry' service row: (name, state, detail, extras).
+
+    inactive: no source configured (optional, with the launcher command);
+    failed: configured but not delivering (bad file, AWS scaffold, replay
+    error); healthy: records flowing (replay running or finished, or live
+    and fresh).  A finished replay stays healthy -- the data was real and was
+    delivered in full -- and the detail says it has ended.
+    """
+    name = "Real telemetry"
+    state = doc.get("state")
+    source = doc.get("source") or {}
+    kind = source.get("kind") or "?"
+    if state == "inactive":
+        return (name, INACTIVE,
+                "no real telemetry source — optional (replay the ZETRABOT mission with "
+                "./run_harvest_dashboard.sh replay --file telemetry/telemetria_mision_63.csv "
+                "--speed 20)", {})
+    if state == "failed" or doc.get("error"):
+        return (name, FAILED, f"telemetry source {kind}: {doc.get('error') or 'failed'}",
+                {"telemetry": {"source": kind}})
+
+    replay = doc.get("replay") or {}
+    mode = doc.get("mode") or "?"
+    tractors = doc.get("tractors") or []
+    facts: List[str] = []
+    for t in tractors:
+        facts.append(f"tractor {t.get('harvest_id')} (ZETRABOT id {t.get('tractor_id')}), "
+                     f"mission {t.get('mission_id') or '?'}, source {t.get('source')}")
+        facts.append(f"  latest telemetry {t.get('timestamp') or 'n/a'}, "
+                     f"{t.get('messages', 0)} messages")
+        facts.append(f"  SOC {_fmt(t.get('soc_pct'), ' %', 1)}  "
+                     f"{_fmt(t.get('battery_voltage_v'), ' V', 1)} / "
+                     f"{_fmt(t.get('battery_current_a'), ' A', 1)}  "
+                     f"power {_fmt(t.get('battery_power_kw'), ' kW')} (derived)")
+        facts.append(f"  discharged {_fmt(t.get('discharged_energy_kwh'), ' kWh')} "
+                     f"(session {_fmt(t.get('discharged_energy_session_kwh'), ' kWh')})")
+        facts.append(f"  battery {_fmt(t.get('battery_temp_c'), ' °C', 0)}, "
+                     f"oil {_fmt(t.get('oil_temp_c'), ' °C', 0)}, motors "
+                     + ", ".join(f"{k} {_fmt(v, '°C', 0)}" for k, v in sorted((t.get('motor_temp_c') or {}).items())))
+        facts.append(f"  PTO {_fmt(t.get('pto_active'))} {_fmt(t.get('pto_speed_rpm'), ' rpm', 0)}, "
+                     f"drive {_fmt(t.get('drive_active'))}, speed {_fmt(t.get('speed_kmh'), ' km/h', 1)}")
+    if mode == "replay":
+        pos = replay.get("position") or "—"
+        rstate = replay.get("state") or "?"
+        detail = (f"{kind} — replay {rstate}, {replay.get('progress_pct', 0):.1f}% "
+                  f"({replay.get('index', 0)}/{replay.get('total', 0)} messages) at "
+                  f"{replay.get('speed', 1)}x, position {pos}")
+        if replay.get("gaps_compressed"):
+            detail += f", {replay['gaps_compressed']} idle gaps compressed"
+        if rstate == "failed":
+            return (name, FAILED, detail + f" — {replay.get('error')}", {"facts": facts})
+        if rstate == "pending" or (rstate == "running" and not tractors):
+            return (name, HEALTHY, detail + " — waiting for the first message", {"facts": facts})
+        return (name, HEALTHY, detail, {"facts": facts, "telemetry": {"source": kind, "mode": mode}})
+    # live
+    if not tractors:
+        return (name, FAILED, f"{kind} — live source connected but no records received yet",
+                {"facts": facts})
+    stale = [t["harvest_id"] for t in tractors if not t.get("available")]
+    if stale:
+        return (name, FAILED, f"{kind} — live, but no fresh data for {', '.join(stale)}",
+                {"facts": facts})
+    return (name, HEALTHY, f"{kind} — live, {len(tractors)} tractor(s) reporting",
+            {"facts": facts, "telemetry": {"source": kind, "mode": mode}})
 
 
 def _isaac_row(clients: ClientRegistry) -> tuple[str, str, str, Dict[str, Any]]:

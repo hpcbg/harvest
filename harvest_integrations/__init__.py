@@ -20,7 +20,16 @@ This package connects the HARVEST semantic device-agent model (defined in
 * ``codec``      -- JSON serialisation of fleet snapshots/commands, shared by
                     the HTTP API, the FIWARE sync and the ROS 2 bridge;
 * ``runtime``    -- a background runner that exposes a live, continuously
-                    advancing fleet over the boundary interfaces.
+                    advancing fleet over the boundary interfaces;
+* ``telemetry``  -- generic, inbound-only telemetry ingestion (``TelemetrySource``
+                    seam, ZETRABOT canonical model, normaliser, original-timeline
+                    replay of the real mission export, energy-model calibration);
+* ``aws``        -- the AWS telemetry-source scaffold (no SDK by default; the
+                    service ZETRABOT exposes is still undocumented).
+
+Telemetry ingestion (``telemetry``/``aws``) and field control (``devices``)
+are deliberately separate seams: data comes in through the first, commands go
+out through the second, and neither knows about the other.
 
 Design rules (mirroring TEMPO's adapter architecture):
 

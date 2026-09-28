@@ -41,6 +41,14 @@ services:
       HARVEST_FLEET_BACKEND: ${HARVEST_FLEET_BACKEND:-sim}
       HARVEST_MODBUS_HOST: farm-sim
       HARVEST_OPCUA_ENDPOINT: opc.tcp://farm-sim:4840/harvest/
+      # Real ZETRABOT telemetry (inbound only).  The repo is bind-mounted at
+      # /harvest, so a CSV path relative to the repo works unchanged; the
+      # launcher's `replay --stack <mode>` sets these for you.
+      HARVEST_TELEMETRY_SOURCE: ${HARVEST_TELEMETRY_SOURCE:-none}
+      HARVEST_TELEMETRY_FILE: ${HARVEST_TELEMETRY_FILE:-}
+      HARVEST_TELEMETRY_SPEED: ${HARVEST_TELEMETRY_SPEED:-}
+      HARVEST_TELEMETRY_MAX_GAP_S: ${HARVEST_TELEMETRY_MAX_GAP_S:-}
+      HARVEST_TELEMETRY_LOOP: ${HARVEST_TELEMETRY_LOOP:-}
       # Diagnostics probes (resolve only when the fiware profile is up; an
       # unresolvable name simply reports the service as inactive/optional).
       ORION_URL: http://orion:1026

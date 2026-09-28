@@ -1,0 +1,16 @@
+# HARVEST — optional AWS telemetry-source dependencies
+#
+# NOT installed by default and NOT imported by the default installation.
+# The AWS service ZETRABOT exposes is undocumented; until it is, no adapter
+# in harvest_integrations/aws/ is functional and nothing here is needed.
+# Uncomment the line(s) for the adapter that gets implemented:
+#
+#   pip install -r requirements-aws.txt
+#
+# AWS IoT Core / MQTT adapter (IotCoreTelemetrySource):
+# awsiotsdk>=1.21
+#
+# Amazon Timestream and S3 adapters (TimestreamTelemetrySource, S3TelemetrySource):
+# boto3>=1.34
+#
+# REST/API adapter (RestTelemetrySource) needs only the standard library.

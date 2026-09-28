@@ -75,7 +75,16 @@ harvest/
 │   │   └── isaac/            #     Optional Isaac Sim layer: contract, motion core,
 │   │                         #     GPU-free stub, robot-model registry, world,
 │   │                         #     WebRTC, Isaac standalone app (see its README)
-│   └── fiware/               #   NGSI-LD client, entity mapping, sync daemon
+│   ├── fiware/               #   NGSI-LD client, entity mapping, sync daemon
+│   ├── telemetry/            #   Real ZETRABOT telemetry (inbound only, see below)
+│   │   ├── model.py          #     TelemetryMessage, ZetrabotTelemetry, TelemetrySource seam
+│   │   ├── zetrack.py        #     Zetrack V2 CSV schema + signal dictionary + CsvTelemetrySource
+│   │   ├── normalizer.py     #     raw messages -> canonical state (unknowns preserved)
+│   │   ├── replay.py         #     original-timeline replay (speed, gap compression)
+│   │   ├── service.py        #     wiring into FleetRuntime / Diagnostics / FIWARE
+│   │   └── analysis.py       #     energy-model calibration CLI (real mission vs HARVEST model)
+│   └── aws/                  #   AWS telemetry-source scaffold + README (no SDK by default)
+├── telemetry/                # Supplied ZETRABOT mission export + Zetrack report (git-ignored)
 ├── ros2_ws/                  # ROS 2 workspace (built & run inside Docker)
 │   └── src/harvest_ros/      #   fleet_bridge + isaac_bridge nodes + topics/qos contract
 ├── docker/                   # Dockerfile (app) + Dockerfile.ros2 (bridge)
@@ -588,6 +597,7 @@ adapted from WISEPACK):
 | `full` | + ROS 2 fleet bridge (`ros:jazzy`, DDS stays in-container) | `devices` |
 | `isaac` | fiware + fleet & Isaac bridges on the **host network**, plus real Isaac Sim started on the host (`HARVEST_ISAAC_AUTOSTART=0` to start it yourself with `./scripts/run_isaac_sim.sh`) | `devices` |
 | `isaac-demo` | isaac + a GPU-free simulator stand-in — the full HARVEST→ROS 2→simulator loop with no Isaac install | `devices` |
+| `replay --file <csv> [--speed N] [--stack <mode>]` | **Real ZETRABOT telemetry** replayed on its original timestamps (see [Real ZETRABOT telemetry](#real-zetrabot-telemetry-mission-replay-calibration-aws)); `lite` unless `--stack` names a mode above | as per stack |
 
 `./run_harvest_dashboard.sh stop` tears everything down; `status` and
 `logs [service]` are also available.  After every successful start the
@@ -750,6 +760,184 @@ The Isaac bridge pushes its state to `POST /api/integrations/status`
 `Isaac Sim` component and the `FarmSimulation` NGSI-LD mirror.  Computer
 vision and manipulation are deliberately out of scope.
 
+### Real ZETRABOT telemetry (mission replay, calibration, AWS)
+
+HARVEST ingests **real ZETRABOT telemetry** through a generic, inbound-only
+layer (`harvest_integrations/telemetry`) that knows nothing about AWS, CSV
+files or FIWARE.  Today the source is the supplied mission export
+(`telemetry/telemetria_mision_63.csv`, git-ignored, alongside the Zetrack V2
+PDF report); tomorrow it is ZETRABOT's AWS feed — swapping one for the other
+changes nothing above the `TelemetrySource` seam.
+
+```
+ CsvTelemetrySource ---\
+                        \
+ AwsTelemetrySource -----> TelemetryNormalizer --> ZetrabotTelemetry (canonical, per tractor)
+ (scaffold, aws/)                                        |
+                                          +--------------+---------------+
+                                          |                              |
+                                   HARVEST state                 FIWARE / NGSI-LD
+                          (FleetRuntime merges the tractor      (TractorTelemetry entity,
+                           into every fleet snapshot,            mirrored by fiware-sync)
+                           Diagnostics "Real telemetry")
+                                          |
+                                 replay / calibration
+
+ HARVEST control -> FleetInterface -> DeviceIO -> Modbus / OPC-UA -> ZETRABOT   (unchanged, separate)
+```
+
+Telemetry ingestion and robot control never mix: data comes in through
+`telemetry`/`aws`, commands go out through `devices`.
+
+#### Replaying the supplied mission
+
+```bash
+# host only, no Docker (lite mode) — 20 telemetry seconds per real second
+./run_harvest_dashboard.sh replay --file telemetry/telemetria_mision_63.csv --speed 20
+
+# the same, plus the Docker stack so the state is mirrored to Orion-LD as NGSI-LD
+./run_harvest_dashboard.sh replay --file telemetry/telemetria_mision_63.csv --speed 20 --stack fiware
+
+# options: --max-gap 30 (cap, in REAL seconds, on idle/overnight pauses; the
+#          mission has a 2.2 h lunch break and two overnights), --loop,
+#          --start/--end <ISO-8601 UTC> to replay a window, --stack <any mode>
+# equivalently, for any mode: HARVEST_TELEMETRY_SOURCE=csv HARVEST_TELEMETRY_FILE=<csv> \
+#                             HARVEST_TELEMETRY_SPEED=20 ./run_harvest_dashboard.sh fiware
+```
+
+Then open the dashboard's **Diagnostics** tab: the **Real telemetry** service
+card (mission, tractor, replay state, source type, latest telemetry
+timestamp, SOC, voltage/current, derived power, cumulative discharged energy,
+temperatures, PTO/drive state) and the **Real telemetry (ZETRABOT)** panel
+with the full canonical state; the replayed tractor also appears as a
+`csv-replay` row in the Devices table and as `zetrabot_1` in
+`GET /api/fleet/snapshot` (map it onto an existing fleet id with
+`integrations.telemetry.tractor_ids`).  `python examples/telemetry_replay_demo.py`
+watches all of this from the command line, and `./validate_harvest_stack.sh`
+checks the whole path (skipped when no source is configured).
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/telemetry` | Source description, replay progress, canonical state per real tractor (`state` = `inactive` when no source is configured, never an error) |
+| `GET /api/telemetry/analysis` | The calibration summary below, computed over the source's whole history |
+
+The replay preserves timestamp ordering (the export is not sorted; the order
+key is timestamp → the robot's `sequence` → row id, because `sequence`
+restarts on every power cycle), keeps the asynchronous sampling of the
+message types as it was (SOC every ~2 min, battery current several times a
+second — every canonical field carries its own `observed_at`), identifies its
+records as `csv-replay`, and **fabricates nothing**: a field is `null` until
+its signal has been seen, position is always `null` (there is no GPS in the
+export — the Zetrack report's route map comes from a separate, undocumented
+stream), and a finished replay marks the tractor *unavailable* rather than
+pretending it is still reporting.
+
+#### What the export contains (documented in `telemetry/zetrack.py`)
+
+One CSV row per **asynchronous message**: `id, user_id, tractor_id,
+mission_id, timestamp, sequence, schema_version, source_message, signals,
+created_at`, where `signals` is a JSON object whose keys depend on
+`source_message` (often a subset, frequently `{}`).  Mission 63 is 56 428
+rows over three working days (2026-05-12/13/14), one tractor, schema 1.0,
+14 message types.
+
+| Canonical field(s) | Wire signal(s) (`source_message.signal`) | Unit |
+|---|---|---|
+| `soc_pct`, `battery_voltage_v`, `battery_temp_c` | `BatteryStatus1.MainBatterySOC / MainBatteryVoltage / MainBatteryTemp` | %, V, °C |
+| `battery_current_a`, `discharged_energy_session_kwh` | `BatteryStatus3.BatteryCurrent / DischEnrgActualSesion` (session counter, resets per power cycle) | A, kWh |
+| `aux_soc_pct`, `aux_battery_voltage_v` | `BatteryStatus2.AuxBatterySOC / AuxBatteryVoltage` | %, V |
+| `speed_kmh`, `oil_temp_c`, `controller_motor_temp_c`, `lifetime_km`, `lifetime_hours` | `MiscInfo.SpeedDisplay / OilTemp / MotorTemp / LifetimeKm / LifetimeHoursActive` | km/h, °C, km, h |
+| `wheel_speed_rpm{T1..T4}` | `PmsMotorSpeed.T1SpeedAbs..T4SpeedAbs` | rpm |
+| `motor_current_a{T1,T3,T4}` | `PmsMotorCurrent.T1Current / T3Current / T4Current` (T2 never reported) | A |
+| `motor_temp_c{T1..T4}`, `pto_temp_c`, `implement_temp_c{BHD,BHG}` | `MotorTemp.TempT1..TempT4 / TempPTO / TempBHD / TempBHG` | °C |
+| `pto_speed_rpm`, `implement_speed_rpm{BHD,BHG}` | `IpmMotorSpeed.PTOSpeed / BHDSpeed / BHGSpeed` | rpm |
+| `pto_current_a`, `implement_current_a{BHD,BHG}` | `IpmMotorCurrent.PTOCurrent / BHDCurrent / BHGCurrent` | A |
+| `pto_active`, `drive_active`, `parked`, `lights_on`, `shovel_active`, `drive_mode`, `move_mode`, `function_leds{*}` | `FunctionStatus.PtoLed / GoLed / PLed / LightsLed / PalaLed / DriveModeLed / MoveModeLed` (+ every other `*Led` raw) | bool / enum |
+| `steering_angle_deg`, `brake_pedal_pct` | `SensorsAnalogValues3.SteerLeftAngle / BrakePedal` | °, % |
+| `hydraulic_pressure_bar` | `SensorsAnalogValues1.AccumPressure` | bar |
+| **derived** `battery_power_kw` | voltage × current, only when both were observed within 120 s of each other | kW |
+| **derived** `discharged_energy_kwh` | the session counter accumulated across its resets (a reset = a drop below half of the running session maximum) | kWh |
+| raw only | `LimitsStatus` (always `{}`), `MemoryData2.CursorPositionOffset` | — |
+
+Anything else on the wire is kept verbatim in `signals_raw` and flagged in
+`unknown_signals` / `unknown_messages` (and mirrored to the broker as
+`unknownSignals`), so a new signal is never silently lost.  **Not in the
+export**: GPS position, charger/charging state, ambient conditions.
+
+#### Energy-model calibration
+
+```bash
+python -m harvest_integrations.telemetry.analysis telemetry/telemetria_mision_63.csv [--json out.json]
+```
+
+compares the real mission with HARVEST's simulated energy model
+(`tractors.model` in `config.yaml`).  Every figure is derived only from the
+export's own signals (sample-and-hold between asynchronous messages; intervals
+over 120 s — power-offs, the lunch break, the overnights — contribute nothing).
+For mission 63:
+
+| Quantity | Value | Basis |
+|---|---|---|
+| SOC change | 64 % → 18 % (Δ 46 %) | `MainBatterySOC` (matches the Zetrack report) |
+| Measured discharged energy | **20.06 kWh** = sum of 8 power-on-session maxima | `DischEnrgActualSesion` accumulated across resets; the report's 6.43 kWh is the *largest single session* |
+| Independent V × I integral | 19.93 kWh (≈ 0.7 % apart) | `MainBatteryVoltage × BatteryCurrent` held between messages |
+| Energy per powered hour | 4.46 kWh/h over 4.50 h powered (47.4 h wall-clock) | |
+| PTO-active | 2.50 h, 17.87 kWh, mean 7.1 kW | held `PtoLed` (the report also says 2.50 h) |
+| Motion (speed > 0) | 2.55 h, 17.59 kWh, mean 6.9 kW | held `SpeedDisplay` (the report: 2.55 h) |
+| Idle (powered, PTO off, drive off, speed 0) | 0.93 h, 0.01 kWh | |
+| Peaks | 26.9 kW, 295 A; power p50/p90/p99 = 5.5 / 9.5 / 14.0 kW | |
+| Distance | 3.70 km from the `LifetimeKm` counter (one glitch reading discarded) | the report: 3.70 km |
+| Effective capacity | **43.6 kWh — an ESTIMATE** (20.06 kWh / 46 %) vs 44.8 kWh nominal in config | *requires confirmation from the ZETRABOT team; not a specification* |
+
+The comparison table it prints (`pto_power_kw` 10 → 7.1 kW measured while
+PTO on, `idle_kwh_per_h` 0.3 → ≈0, `driving_kwh_per_km` — an upper bound
+only, since PTO work happens while moving) is the input for tuning
+`config.yaml`; it changes nothing by itself.
+
+#### How the real-data replay differs from the synthetic farm simulator
+
+| | Synthetic simulator (`sim` / `devices` + farm-sim, Isaac) | Real-data replay (`csv-replay`) |
+|---|---|---|
+| Clock | HARVEST's farm day, 1 sim-minute per second | the robot's own timestamps (May 2026), accelerated by `--speed`, idle gaps compressed |
+| Sampling | one coherent snapshot per tick | asynchronous messages, each field with its own `observed_at`; some fields stale, some never seen |
+| Fields | SOC, energy, charging, position, task | SOC, V/I/power, energies, temperatures, PTO/drive/steering/brake/hydraulics — **no position, no charging state** |
+| Control | commands actuate it (`request_charge`, `assign_task` …) | read-only; commands go to the fleet backend, never to the recording |
+| Availability | always present | present while the replay delivers; *unavailable* once the recording ends |
+| Scheduling | HARVEST's `main.Scheduler` schedules it | untouched: the replayed tractor is not in `tractors.fleet`, so the task layer ignores it unless mapped onto a fleet id |
+| Diagnostics state | `simulated` | `healthy` (real data; the detail says *replay* and the source type) — never `simulated` |
+
+#### AWS: what is prepared, and what is still required
+
+`harvest_integrations/aws` holds the adapter scaffold — `AwsTelemetrySource`
+with `IotCoreTelemetrySource` (MQTT), `TimestreamTelemetrySource`,
+`S3TelemetrySource` (historical files, replayed exactly like the CSV) and
+`RestTelemetrySource` — plus `README.md` describing how each would be
+implemented.  None is functional yet and **no AWS SDK is imported by the
+default installation** (`requirements-aws.txt` lists the optional extras,
+commented out).  Configuring `integrations.telemetry.source: aws` makes the
+Diagnostics row read `failed` with the reason, not `healthy`.
+
+Still required from the ZETRABOT team (details in `harvest_integrations/aws/README.md`):
+which AWS service partners read from (IoT Core topic / Timestream table / S3
+bucket / HTTP API) and region; authentication; the document schema
+(ideally the export's `source_message` + `signals` shape) and timestamp
+conventions; the dictionary for signals not in the export — GPS, charging
+state, alarms, `LimitsStatus`, `MemoryData2`; message rates, retention and
+ordering guarantees; the battery's nominal capacity, to confirm the
+mission-derived estimate.
+
+#### Still required for direct Modbus / OPC-UA control of ZETRABOT
+
+The control path (`FleetInterface → DeviceIO → Modbus/OPC-UA`) is exercised
+today against the bundled farm simulator.  Pointing it at the real robot
+needs, from ZETRABOT: the protocol it exposes (Modbus TCP register map or
+OPC-UA address space, or a ROS 2 interface), the writable points that
+correspond to HARVEST's commands (`request_charge`/`release_charge`,
+`assign_task`/`preempt_task`, `v2l_start`/`v2l_stop`), the readable points
+mirroring the telemetry above (so the two sources can be cross-checked), the
+network path and credentials, and the safety interlocks (who may command what,
+and what the robot does when HARVEST goes silent).
+
 ### Diagnostics view
 
 The dashboard's **Diagnostics** tab (modelled on WISEPACK's diagnostics page)
@@ -772,7 +960,17 @@ Docker socket).
   age), and a lost connection or simulator error (`failed`).
 * **Devices** — one row per endpoint from the `DeviceIO` layer: protocol,
   connection target, reachability, latest values and their age.  In `sim`
-  mode the same rows appear tagged `sim`.
+  mode the same rows appear tagged `sim`; a replayed real tractor appears
+  tagged `csv-replay` (it is never counted as a field device or an adapter).
+* **Real telemetry** — the `Real telemetry` service card (`inactive` with the
+  replay command when no source is configured, `failed` with the reason when
+  the source cannot deliver — a missing file, the AWS scaffold — and
+  `healthy` while a replay runs or a live feed is fresh) plus the **Real
+  telemetry (ZETRABOT)** panel: mission and tractor ids, replay/live state and
+  progress, source type, latest telemetry timestamp, SOC, voltage/current,
+  derived power, cumulative discharged energy, temperatures, PTO/drive state
+  and every other canonical field, with `n/a` for anything the data never
+  carried (position included).
 * **Cross-protocol demonstration** — a scripted, observable proof of the
   abstraction (button in the sidebar, or `POST /api/diagnostics/demo`):
   a charge command is issued through the generic fleet interface (written via
@@ -797,7 +995,16 @@ suite:
 ```bash
 python -m unittest discover tests            # protocol tests auto-skip
 pip install -r requirements-integrations.txt # enables live Modbus/OPC-UA loopback tests
+python -m unittest tests.test_telemetry -v   # real-telemetry layer: parsing, normalisation,
+                                             # ordering, replay, FIWARE mapping, analysis
 ```
+
+`tests/test_telemetry.py` runs on `tests/fixtures/zetrabot_mission_fixture.csv`
+(432 rows copied verbatim from the mission export, deliberately scrambled,
+plus ten synthetic edge rows: unknown signal/message, empty/invalid/null
+signals, a non-numeric value, a row without a timestamp, a second tractor);
+the cross-checks against the Zetrack report run only when the full export is
+present.
 
 ---
 
@@ -1269,7 +1476,12 @@ pymodbus (pinned 3.6.9), asyncua            # only for the Modbus/OPC-UA device
 ```bash
 pip install -r requirements.txt
 pip install -r requirements-integrations.txt   # optional — device backend only
+pip install -r requirements-aws.txt            # optional — AWS telemetry adapters; every
+                                               # line is commented out until the service is known
 ```
+
+The real-telemetry layer (`harvest_integrations/telemetry`) and the AWS
+scaffold are standard-library only.
 
 The Docker stack (`./run_harvest_dashboard.sh`) needs only Docker + Compose on
 the host; all Python, FIWARE and ROS 2 dependencies stay inside the

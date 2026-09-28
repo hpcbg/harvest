@@ -21,6 +21,11 @@ EnergyConsumer:<id>     name, shed, powerKw
 FarmEnergySystem:main   clockMin, gridDrawKw, gridCapKw, pvKw, tariff,
                         priceEurPerKwh
 FarmCommand:main        command (inbound, JSON string), lastResult, lastNonce
+TractorTelemetry:<id>   real ZETRABOT telemetry (see :func:`telemetry_entities`):
+                        source, missionId, socPct, batteryVoltageV,
+                        batteryCurrentA, batteryPowerKw, dischargedEnergyKwh,
+                        temperatures, ptoActive, driveActive, speedKmh ...
+                        ``observedAt`` = the ROBOT's timestamp, not sync time
 ======================  =====================================================
 
 Telemetry attributes carry ``observedAt`` so freshness travels in the data
@@ -206,6 +211,109 @@ def task_board_entity(document: Dict[str, Any],
         "activeTasks": _prop(active, ts),
         "assignments": _prop({str(k): str(v) for k, v in assignments.items()}, ts),
     }
+
+
+TELEMETRY_ENTITY_TYPE = "TractorTelemetry"
+
+# canonical field -> (NGSI-LD attribute, unitCode or None)
+_TELEMETRY_SCALARS = (
+    ("soc_pct", "socPct", _UNIT_PCT),
+    ("aux_soc_pct", "auxSocPct", _UNIT_PCT),
+    ("battery_voltage_v", "batteryVoltageV", "VLT"),
+    ("aux_battery_voltage_v", "auxBatteryVoltageV", "VLT"),
+    ("battery_current_a", "batteryCurrentA", "AMP"),
+    ("battery_temp_c", "batteryTempC", "CEL"),
+    ("battery_power_kw", "batteryPowerKw", _UNIT_KW),
+    ("discharged_energy_session_kwh", "dischargedEnergySessionKwh", _UNIT_KWH),
+    ("discharged_energy_kwh", "dischargedEnergyKwh", _UNIT_KWH),
+    ("speed_kmh", "speedKmh", "KMH"),
+    ("controller_motor_temp_c", "controllerMotorTempC", "CEL"),
+    ("oil_temp_c", "oilTempC", "CEL"),
+    ("pto_active", "ptoActive", None),
+    ("pto_speed_rpm", "ptoSpeedRpm", "RPM"),
+    ("pto_current_a", "ptoCurrentA", "AMP"),
+    ("pto_temp_c", "ptoTempC", "CEL"),
+    ("drive_active", "driveActive", None),
+    ("parked", "parked", None),
+    ("drive_mode", "driveMode", None),
+    ("move_mode", "moveMode", None),
+    ("steering_angle_deg", "steeringAngleDeg", "DD"),
+    ("brake_pedal_pct", "brakePedalPct", _UNIT_PCT),
+    ("hydraulic_pressure_bar", "hydraulicPressureBar", "BAR"),
+    ("lifetime_km", "lifetimeKm", "KMT"),
+    ("lifetime_hours", "lifetimeHours", "HUR"),
+)
+_TELEMETRY_MAPS = (
+    ("wheel_speed_rpm", "wheelSpeedRpm", "RPM"),
+    ("motor_current_a", "motorCurrentA", "AMP"),
+    ("motor_temp_c", "motorTempC", "CEL"),
+    ("implement_speed_rpm", "implementSpeedRpm", "RPM"),
+    ("implement_current_a", "implementCurrentA", "AMP"),
+    ("implement_temp_c", "implementTempC", "CEL"),
+    ("function_leds", "functionLeds", None),
+)
+
+
+def telemetry_entities(document: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Mirror of the real ZETRABOT telemetry (``GET /api/telemetry``).
+
+    One ``TractorTelemetry`` entity per real tractor, id
+    ``urn:ngsi-ld:TractorTelemetry:<harvest id>`` so it pairs with the
+    ``ElectricTractor`` entity the fleet snapshot already produces for the
+    same id.  Two honesty rules:
+
+    * **absent stays absent** -- a canonical field that is ``None`` (never
+      observed) produces no attribute at all, rather than a zero; position
+      is never emitted (no GPS in the data) and there is no GeoProperty;
+    * **observedAt is the robot's time** -- for a replay that is a 2026-05
+      timestamp, so a consumer can see it is recorded data; ``source``
+      (``csv-replay``) and ``replayState`` say so explicitly.
+    """
+    entities: List[Dict[str, Any]] = []
+    replay = document.get("replay") or {}
+    for t in document.get("tractors") or []:
+        ts = t.get("timestamp") or _now_iso()
+        # Per-field observation times: SOC arrives every ~2 min, current
+        # several times a second -- each attribute carries its own stamp.
+        seen: Dict[str, str] = t.get("observed_at") or {}
+        entity: Dict[str, Any] = {
+            "id": entity_id(TELEMETRY_ENTITY_TYPE, str(t.get("harvest_id") or t.get("tractor_id"))),
+            "type": TELEMETRY_ENTITY_TYPE,
+            "source": _prop(str(t.get("source") or "unknown"), ts),
+            "mode": _prop(str(document.get("mode") or "unknown"), ts),
+            "robotTractorId": _prop(str(t.get("tractor_id")), ts),
+            "available": _prop(bool(t.get("available")), ts),
+            "messagesIngested": _prop(int(t.get("messages") or 0), ts),
+            "refElectricTractor": {
+                "type": "Relationship",
+                "object": entity_id("ElectricTractor", str(t.get("harvest_id") or t.get("tractor_id"))),
+            },
+        }
+        if t.get("mission_id") is not None:
+            entity["missionId"] = _prop(str(t["mission_id"]), ts)
+        if replay:
+            entity["replayState"] = _prop(str(replay.get("state") or "unknown"), ts)
+            if replay.get("progress_pct") is not None:
+                entity["replayProgressPct"] = _prop(float(replay["progress_pct"]), ts, _UNIT_PCT)
+        for field_name, attr, unit in _TELEMETRY_SCALARS:
+            value = t.get(field_name)
+            if value is None:
+                continue
+            if isinstance(value, float):
+                value = round(value, 3)
+            entity[attr] = _prop(value, seen.get(field_name) or ts, unit)
+        for field_name, attr, unit in _TELEMETRY_MAPS:
+            value = t.get(field_name)
+            if value:
+                entity[attr] = _prop({k: (round(v, 3) if isinstance(v, float) else v)
+                                      for k, v in value.items()}, seen.get(field_name) or ts, unit)
+        unknown = t.get("unknown_signals") or {}
+        if unknown:
+            # Preserved, not interpreted: whatever the robot sent that the
+            # dictionary does not know yet travels to the broker verbatim.
+            entity["unknownSignals"] = _prop(dict(unknown), ts)
+        entities.append(entity)
+    return entities
 
 
 def command_entity() -> Dict[str, Any]:

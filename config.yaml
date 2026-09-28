@@ -469,3 +469,28 @@ integrations:
     #       power_kw: {address: 300, scale: 0.1}
     #       shed:     {address: 301, writable: true}
     custom_devices: []
+  # Real ZETRABOT telemetry — INBOUND data only, separate from the control
+  # path above (commands still go FleetInterface -> DeviceIO -> Modbus/OPC-UA).
+  # Env overrides: HARVEST_TELEMETRY_SOURCE / _FILE / _SPEED / _MAX_GAP_S /
+  # _LOOP / _START / _END.  See README "Real ZETRABOT telemetry".
+  telemetry:
+    #   none — off (default)
+    #   csv  — replay a Zetrack CSV export on its original timestamps
+    #          (./run_harvest_dashboard.sh replay --file <csv> --speed 20)
+    #   aws  — scaffold only until the ZETRABOT team documents the AWS service
+    #          (harvest_integrations/aws/README.md)
+    source: none
+    csv:
+      file: telemetry/telemetria_mision_63.csv
+      speed: 20.0          # telemetry seconds per real second (<= 0: as fast as possible)
+      max_gap_s: 30.0      # cap on the REAL-time pause across idle/overnight gaps
+      loop: false
+      # start: 2026-05-13T11:25:00Z   # optional replay window (UTC)
+      # end:   2026-05-13T16:15:00Z
+    # ZETRABOT tractor_id -> id used in HARVEST's fleet snapshot / FIWARE.
+    # Default is zetrabot_<id>; map onto tractor_1 to overlay a fleet tractor.
+    tractor_ids:
+      "1": zetrabot_1
+    aws:
+      adapter: ""          # iot-core | timestream | s3 | rest (none functional yet)
+      region: ""

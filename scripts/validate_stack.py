@@ -217,6 +217,72 @@ def check_fiware() -> None:
         record("Inbound NGSI-LD command", FAIL, str(exc))
 
 
+def check_telemetry() -> None:
+    """Real ZETRABOT telemetry: skipped when no source is configured."""
+    try:
+        _, doc = http_json("GET", f"{HARVEST}/api/telemetry")
+    except Exception as exc:
+        record("Telemetry endpoint", FAIL, str(exc))
+        return
+    state = (doc or {}).get("state")
+    if state == "inactive":
+        record("Real telemetry checks", SKIP,
+               "no source configured (./run_harvest_dashboard.sh replay --file <csv>)")
+        return
+    if state == "failed":
+        record("Real telemetry source", FAIL, str(doc.get("error")))
+        return
+    source = (doc.get("source") or {}).get("kind")
+    record("Real telemetry source", PASS, f"{source}, mode {doc.get('mode')}")
+
+    # The first message arrives within a few seconds at any speed.
+    deadline = time.time() + 30
+    tractors = doc.get("tractors") or []
+    while time.time() < deadline and not tractors:
+        time.sleep(1)
+        _, doc = http_json("GET", f"{HARVEST}/api/telemetry")
+        tractors = doc.get("tractors") or []
+    ok = bool(tractors) and tractors[0].get("soc_pct") is not None
+    record("Telemetry normalised", PASS if ok else FAIL,
+           (f"{tractors[0]['harvest_id']} mission {tractors[0].get('mission_id')} "
+            f"SOC {tractors[0].get('soc_pct')} % at {tractors[0].get('timestamp')}")
+           if tractors else "no tractor state yet")
+    if not tractors:
+        return
+    hid = tractors[0]["harvest_id"]
+
+    _, snap = http_json("GET", f"{HARVEST}/api/fleet/snapshot")
+    in_fleet = any(t["id"] == hid for t in snap.get("tractors", []))
+    record("Real tractor in fleet snapshot", PASS if in_fleet else FAIL, hid)
+
+    _, diag = http_json("GET", f"{HARVEST}/api/diagnostics")
+    row = next((s for s in diag.get("services", []) if s["name"] == "Real telemetry"), None)
+    record("Real telemetry diagnostics row",
+           PASS if row and row["state"] == "healthy" else FAIL,
+           row["detail"] if row else "row missing")
+
+    if reachable(f"{ORION}/version"):
+        found = None
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            try:
+                _, entity = http_json(
+                    "GET", f"{ORION}/ngsi-ld/v1/entities/urn:ngsi-ld:TractorTelemetry:{hid}"
+                           "?options=keyValues")
+                if entity and entity.get("socPct") is not None:
+                    found = entity
+                    break
+            except Exception:
+                pass
+            time.sleep(2)
+        record("TractorTelemetry entity mirrored", PASS if found else FAIL,
+               (f"source={found.get('source')} socPct={found.get('socPct')} "
+                f"dischargedEnergyKwh={found.get('dischargedEnergyKwh')}") if found
+               else "entity not found in the broker")
+    else:
+        record("TractorTelemetry entity mirrored", SKIP, "Orion-LD not running")
+
+
 def check_ros2() -> None:
     probe = subprocess.run(
         ["docker", "ps", "--filter", "name=ros2-bridge", "--format", "{{.Names}}"],
@@ -317,6 +383,7 @@ def main() -> int:
     check_command_roundtrip()
     check_diagnostics()
     check_fiware()
+    check_telemetry()
     check_ros2()
     check_isaac()
 

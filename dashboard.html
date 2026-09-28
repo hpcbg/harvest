@@ -195,7 +195,18 @@
     .pr-modbus{background:var(--blue-lt);color:var(--blue)}
     .pr-opcua{background:var(--teal-lt);color:var(--teal)}
     .pr-sim{background:var(--amber-lt);color:var(--amber)}
+    .pr-replay{background:var(--green-lt);color:var(--green)}
     .pr-other{background:var(--bg2);color:var(--text3);border:1px solid var(--border)}
+    /* Real telemetry panel: a key/value grid per real tractor.  Values that
+       the data does not contain render as "n/a" — never as a number. */
+    .tele-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;margin-top:10px}
+    .tele-kv{background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px}
+    .tele-kv .tk{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.03em}
+    .tele-kv .tv{font-family:var(--mono);font-size:12px;color:var(--text2);margin-top:3px;word-break:break-word}
+    .tele-kv .tage{font-size:9px;color:var(--text3);margin-top:2px}
+    .tele-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--text2)}
+    .tele-bar{height:5px;background:var(--bg3);border:1px solid var(--border);border-radius:3px;overflow:hidden;flex:1;min-width:120px}
+    .tele-fill{height:100%;background:var(--green);width:0}
     .diag-panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--rl);padding:16px}
     .diag-title{font-size:13px;font-weight:600;margin-bottom:10px;display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
     .diag-note{font-size:10px;color:var(--text3);font-weight:400}
@@ -482,6 +493,11 @@
             <tbody id="diag-devices"></tbody>
           </table>
         </div>
+      </div>
+      <div class="diag-panel">
+        <div class="diag-title">Real telemetry (ZETRABOT)
+          <span class="diag-note" id="tele-note">source · mission · replay state</span></div>
+        <div id="tele-body" style="font-size:12px;color:var(--text3)">no real telemetry source configured</div>
       </div>
       <div class="diag-panel">
         <div class="diag-title">Cross-protocol demonstration
@@ -921,6 +937,7 @@ async function fetchDiag(){
     err.style.display='none';
     renderDiagServices(d.services||[]);
     renderDiagDevices(d.devices||[]);
+    renderTelemetry(d.telemetry||null);
     if(!demoTimer) renderDemo(d.demo);   // demoTimer owns rendering while running
     document.getElementById('diag-updated').textContent=
       'updated '+new Date().toLocaleTimeString();
@@ -949,8 +966,87 @@ function renderDiagServices(services){
 }
 
 function protoPill(p){
-  const cls={modbus:'pr-modbus',opcua:'pr-opcua',sim:'pr-sim'}[p]||'pr-other';
+  const cls={modbus:'pr-modbus',opcua:'pr-opcua',sim:'pr-sim','csv-replay':'pr-replay'}[p]||'pr-other';
   return `<span class="proto-pill ${cls}">${escDiag(p)}</span>`;
+}
+
+/* Real telemetry panel — rendered from the `telemetry` document of
+   GET /api/diagnostics (the same document as GET /api/telemetry).  Only
+   observed values are shown; a field the data never carried reads "n/a". */
+function teleFmt(v,unit,nd){
+  if(v===null||v===undefined) return 'n/a';
+  if(typeof v==='boolean') return v?'yes':'no';
+  if(typeof v==='number') return (nd===undefined?v.toFixed(2):v.toFixed(nd))+(unit||'');
+  if(typeof v==='object') return Object.entries(v).map(([k,x])=>`${k} ${typeof x==='number'?x.toFixed(nd===undefined?0:nd):x}`).join(' · ')||'n/a';
+  return String(v)+(unit||'');
+}
+function teleAge(t,key){
+  const a=(t.field_ages_s||{})[key];
+  return (a===null||a===undefined)?'':`observed ${Math.round(a)}s before latest`;
+}
+function renderTelemetry(doc){
+  const body=document.getElementById('tele-body');
+  const note=document.getElementById('tele-note');
+  if(!doc||doc.state==='inactive'){
+    note.textContent='inactive — optional';
+    body.innerHTML='no real telemetry source configured — replay the supplied mission with '
+      +'<span class="diag-cmd" style="display:inline-block"><span class="c">./run_harvest_dashboard.sh replay --file telemetry/telemetria_mision_63.csv --speed 20</span></span>';
+    return;
+  }
+  if(doc.state==='failed'||doc.error){
+    note.textContent='failed';
+    body.innerHTML=`<span class="dstate ds-failed">failed</span> ${escDiag(doc.error||'telemetry source failed')}`;
+    return;
+  }
+  const src=doc.source||{}, rp=doc.replay||{};
+  const tractors=doc.tractors||[];
+  note.textContent=`${src.kind||'?'} · ${doc.mode||'?'}`;
+  let html='';
+  if(doc.mode==='replay'){
+    const pct=Math.max(0,Math.min(100,rp.progress_pct||0));
+    html+=`<div class="tele-head">
+      <span class="dstate ds-${rp.state==='failed'?'failed':'healthy'}">${escDiag(rp.state||'?')}</span>
+      <span>replay of <strong>${escDiag(src.file?src.file.split('/').pop():src.kind)}</strong> at ${escDiag(rp.speed)}×</span>
+      <div class="tele-bar"><div class="tele-fill" style="width:${pct}%"></div></div>
+      <span style="font-family:var(--mono);font-size:10px">${pct.toFixed(1)}% · ${rp.index||0}/${rp.total||0} msgs</span>
+      <span style="font-family:var(--mono);font-size:10px">position ${escDiag(rp.position||'—')}</span>
+      ${rp.gaps_compressed?`<span style="font-size:10px">${rp.gaps_compressed} idle gaps compressed</span>`:''}
+    </div>`;
+  }else{
+    html+=`<div class="tele-head"><span class="dstate ds-healthy">live</span>
+      <span>${escDiag(src.kind||'?')}</span></div>`;
+  }
+  if(!tractors.length){
+    html+='<div style="margin-top:8px">waiting for the first telemetry message…</div>';
+    body.innerHTML=html;return;
+  }
+  for(const t of tractors){
+    const kv=(k,v,age)=>`<div class="tele-kv"><div class="tk">${escDiag(k)}</div><div class="tv">${v}</div>${age?`<div class="tage">${escDiag(age)}</div>`:''}</div>`;
+    const pw=t.battery_power_kw;
+    html+=`<div style="margin-top:12px;font-size:12px;font-weight:600;color:var(--text2)">
+      ${escDiag(t.harvest_id)} <span style="font-weight:400;color:var(--text3)">· ZETRABOT tractor ${escDiag(t.tractor_id)} · mission ${escDiag(t.mission_id||'?')} · source ${escDiag(t.source)} · ${t.available?'<span class="dstate ds-healthy">present</span>':'<span class="dstate ds-inactive">recording ended</span>'}</span></div>
+      <div class="tele-grid">
+      ${kv('Latest telemetry',escDiag(t.timestamp||'n/a'),`${t.messages||0} messages ingested`)}
+      ${kv('State of charge',teleFmt(t.soc_pct,' %',1),teleAge(t,'soc_pct'))}
+      ${kv('Battery voltage / current',`${teleFmt(t.battery_voltage_v,' V',1)} / ${teleFmt(t.battery_current_a,' A',1)}`,teleAge(t,'battery_current_a'))}
+      ${kv('Battery power (derived V×I)',teleFmt(pw,' kW'),pw===null||pw===undefined?'needs voltage and current within 120 s':'')}
+      ${kv('Discharged energy (mission)',teleFmt(t.discharged_energy_kwh,' kWh'),`session counter ${teleFmt(t.discharged_energy_session_kwh,' kWh')} · ${t.session_resets||0} resets`)}
+      ${kv('Energy at nominal capacity',teleFmt(t.energy_kwh_nominal,' kWh'),'SOC × config capacity, not measured')}
+      ${kv('Battery / oil temperature',`${teleFmt(t.battery_temp_c,' °C',0)} / ${teleFmt(t.oil_temp_c,' °C',0)}`,teleAge(t,'battery_temp_c'))}
+      ${kv('Motor temperatures',teleFmt(t.motor_temp_c),`PTO ${teleFmt(t.pto_temp_c,' °C',0)}`)}
+      ${kv('PTO',`${teleFmt(t.pto_active)} · ${teleFmt(t.pto_speed_rpm,' rpm',0)} · ${teleFmt(t.pto_current_a,' A',1)}`,teleAge(t,'pto_active'))}
+      ${kv('Drive / parked / modes',`drive ${teleFmt(t.drive_active)} · parked ${teleFmt(t.parked)} · drive mode ${teleFmt(t.drive_mode,'',0)} · move mode ${teleFmt(t.move_mode,'',0)}`,teleAge(t,'drive_active'))}
+      ${kv('Speed',teleFmt(t.speed_kmh,' km/h',1),teleAge(t,'speed_kmh'))}
+      ${kv('Wheel speeds',teleFmt(t.wheel_speed_rpm),'rpm')}
+      ${kv('Motor currents',teleFmt(t.motor_current_a,'',1),'A')}
+      ${kv('Steering / brake / hydraulic',`${teleFmt(t.steering_angle_deg,'°',1)} · ${teleFmt(t.brake_pedal_pct,' %',0)} · ${teleFmt(t.hydraulic_pressure_bar,' bar',0)}`)}
+      ${kv('Aux battery',`${teleFmt(t.aux_soc_pct,' %',1)} · ${teleFmt(t.aux_battery_voltage_v,' V',1)}`)}
+      ${kv('Lifetime counters',`${teleFmt(t.lifetime_km,' km',1)} · ${teleFmt(t.lifetime_hours,' h',1)}`)}
+      ${kv('Position (GPS)','n/a','not in this telemetry — never fabricated')}
+      ${kv('Unknown signals preserved',escDiag(Object.keys(t.unknown_signals||{}).join(', ')||'none'),`${t.out_of_order||0} out-of-order · ${t.invalid_values||0} non-numeric`)}
+      </div>`;
+  }
+  body.innerHTML=html;
 }
 
 function renderDiagDevices(devices){

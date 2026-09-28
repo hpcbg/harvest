@@ -30,6 +30,20 @@
 #              core Isaac uses), so the full HARVEST->ROS 2->simulator loop
 #              runs end-to-end without Isaac installed.
 #
+# Real ZETRABOT telemetry replay (inbound data; control paths are unchanged):
+#   ./run_harvest_dashboard.sh replay --file telemetry/telemetria_mision_63.csv \
+#                                     [--speed 20] [--max-gap 30] [--loop] \
+#                                     [--start <iso>] [--end <iso>] [--stack <mode>]
+#              Replays the Zetrack CSV export on its original timestamps
+#              through the generic TelemetrySource seam.  Runs in `lite` mode
+#              (host, no Docker) unless --stack names one of the modes above,
+#              e.g. --stack fiware to see the TractorTelemetry NGSI-LD mirror.
+#              The Diagnostics tab shows the "Real telemetry" panel; the
+#              replayed tractor appears as zetrabot_<id> in the fleet API.
+#              Same thing via environment for any mode:
+#                HARVEST_TELEMETRY_SOURCE=csv HARVEST_TELEMETRY_FILE=<csv> \
+#                HARVEST_TELEMETRY_SPEED=20 ./run_harvest_dashboard.sh fiware
+#
 # Management:
 #   ./run_harvest_dashboard.sh stop      Stop and remove the whole stack
 #   ./run_harvest_dashboard.sh clean     stop + delete the broker database
@@ -66,6 +80,57 @@ HARVEST_PORT="${HARVEST_PORT:-8765}"
 READY_TIMEOUT="${HARVEST_READY_TIMEOUT:-120}"
 
 usage() { awk '/^# ----/{n++} n==1' "$0" | sed 's/^# \{0,1\}//'; }
+
+# ── Real telemetry replay: `replay --file <csv> [...]` ───────────────────────
+# Parses the replay options into the HARVEST_TELEMETRY_* environment that
+# server.py / FleetRuntime read, then continues as the requested stack mode
+# (`lite` by default).  Only the file path needs care: in Docker modes the
+# repository is bind-mounted at /harvest, so the path must live inside it.
+REPLAY_STACK="lite"
+if [ "$MODE" = "replay" ]; then
+  shift || true
+  REPLAY_FILE=""; REPLAY_SPEED="20"; REPLAY_GAP="30"; REPLAY_LOOP="0"
+  REPLAY_START=""; REPLAY_END=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --file)    REPLAY_FILE="${2:-}"; shift 2 ;;
+      --speed)   REPLAY_SPEED="${2:-}"; shift 2 ;;
+      --max-gap) REPLAY_GAP="${2:-}"; shift 2 ;;
+      --loop)    REPLAY_LOOP="1"; shift ;;
+      --start)   REPLAY_START="${2:-}"; shift 2 ;;
+      --end)     REPLAY_END="${2:-}"; shift 2 ;;
+      --stack)   REPLAY_STACK="${2:-lite}"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "replay: unknown option $1" >&2; usage; exit 2 ;;
+    esac
+  done
+  [ -n "$REPLAY_FILE" ] || { echo "replay: --file <csv> is required" >&2; exit 2; }
+  [ -f "$REPLAY_FILE" ] || { echo "replay: file not found: $REPLAY_FILE" >&2; exit 2; }
+  case "$REPLAY_STACK" in
+    lite) ;;
+    core|devices|fiware|full|isaac|isaac-demo)
+      # Docker: the container sees the repo at /harvest -> make the path
+      # repo-relative and refuse files outside the bind mount.
+      abs="$(cd "$(dirname "$REPLAY_FILE")" && pwd)/$(basename "$REPLAY_FILE")"
+      case "$abs" in
+        "$REPO"/*) REPLAY_FILE="${abs#"$REPO"/}" ;;
+        *) echo "replay: with --stack $REPLAY_STACK the CSV must be inside the repository" >&2
+           echo "        (it is bind-mounted into the containers); copy it under telemetry/" >&2
+           exit 2 ;;
+      esac ;;
+    *) echo "replay: unknown --stack $REPLAY_STACK" >&2; exit 2 ;;
+  esac
+  export HARVEST_TELEMETRY_SOURCE="csv"
+  export HARVEST_TELEMETRY_FILE="$REPLAY_FILE"
+  export HARVEST_TELEMETRY_SPEED="$REPLAY_SPEED"
+  export HARVEST_TELEMETRY_MAX_GAP_S="$REPLAY_GAP"
+  export HARVEST_TELEMETRY_LOOP="$REPLAY_LOOP"
+  [ -n "$REPLAY_START" ] && export HARVEST_TELEMETRY_START="$REPLAY_START"
+  [ -n "$REPLAY_END" ] && export HARVEST_TELEMETRY_END="$REPLAY_END"
+  MODE="$REPLAY_STACK"
+  echo "── Real telemetry replay: $REPLAY_FILE at ${REPLAY_SPEED}x (gap cap ${REPLAY_GAP}s," \
+       "loop $REPLAY_LOOP) → stack mode $MODE ──"
+fi
 
 compose() { docker compose "$@"; }
 
@@ -168,6 +233,9 @@ print_banner() {   # $1 = headline
   row "Dashboard"   "http://localhost:$HARVEST_PORT"
   row "Diagnostics" "http://localhost:$HARVEST_PORT  (Diagnostics tab)"
   row "Fleet API"   "http://localhost:$HARVEST_PORT/api/fleet/snapshot"
+  if [ "${HARVEST_TELEMETRY_SOURCE:-none}" != "none" ]; then
+    row "Telemetry" "http://localhost:$HARVEST_PORT/api/telemetry  (${HARVEST_TELEMETRY_SOURCE})"
+  fi
   case "$MODE" in fiware|full|isaac|isaac-demo)
     row "NGSI-LD"   "http://localhost:${ORION_PORT:-1026}/ngsi-ld/v1/entities" ;;
   esac
@@ -241,10 +309,15 @@ case "$MODE" in
     exit 0 ;;
 
   lite)
-    # No Docker: the original lightweight path.
+    # No Docker: the original lightweight path.  HARVEST_TELEMETRY_* (set by
+    # `replay`, or by you) is inherited by server.py unchanged.
     PY="python3"
     [ -x "$REPO/.venv/bin/python" ] && PY="$REPO/.venv/bin/python"
     echo "Starting HARVEST server on the host ($PY) ..."
+    if [ "${HARVEST_TELEMETRY_SOURCE:-none}" != "none" ]; then
+      echo "Real telemetry: ${HARVEST_TELEMETRY_SOURCE} ${HARVEST_TELEMETRY_FILE:-}" \
+           "→ http://localhost:$HARVEST_PORT/api/telemetry (Diagnostics tab: Real telemetry)"
+    fi
     exec "$PY" server.py ;;
 
   core|devices|fiware|full|isaac|isaac-demo) ;;

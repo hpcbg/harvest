@@ -18,12 +18,20 @@ config* (fleet, charging stations, energy consumers) using the same wire
 conventions the bundled simulator serves, so config.yaml stays the single
 source of device identity.  Fully custom endpoints (arbitrary point maps,
 extra protocols) can be appended under ``integrations.fleet.custom_devices``.
+
+Real telemetry (``integrations.telemetry``, env ``HARVEST_TELEMETRY_*``) is a
+separate, inbound-only layer: a :class:`~harvest_integrations.telemetry.service.TelemetryService`
+feeds canonical ZETRABOT states into a registry, and this runtime *merges*
+those tractors into every snapshot (as ``zetrabot_<id>`` unless mapped onto
+an existing fleet id).  Commands never go through it -- control stays with
+the fleet backend (DeviceIO / Modbus / OPC-UA).
 """
 from __future__ import annotations
 
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from harvest_control.interface import Command, CommandAck, FleetInterface, FleetSnapshot
@@ -31,6 +39,8 @@ from harvest_control.sim_backend import SimulationFleetInterface
 
 from .devices.base import DeviceEndpoint, PointSpec, endpoint_from_dict
 from .devices.fleet_backend import DeviceFleetInterface
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Wire conventions shared with harvest_integrations.simulators (see
 # modbus_server.py / opcua_server.py for the authoritative maps).
@@ -159,21 +169,67 @@ class FleetRuntime:
                 target=self._advance_loop, name="fleet-advance", daemon=True)
             self._thread.start()
 
+        # Real telemetry (optional, inbound only).  A misconfigured or
+        # not-yet-implemented source (the AWS scaffold) is REPORTED through
+        # telemetry_error / Diagnostics, never allowed to take the fleet down.
+        self.telemetry = None
+        self.telemetry_error = ""
+        try:
+            from .telemetry.service import build_telemetry_service
+            self.telemetry = build_telemetry_service(cfg, repo_root=_REPO_ROOT)
+        except Exception as exc:                                   # noqa: BLE001
+            self.telemetry_error = f"{type(exc).__name__}: {exc}"
+
     # -- boundary methods (thread-safe) ---------------------------------------
     def snapshot(self) -> FleetSnapshot:
         with self._lock:
-            return self.fleet.snapshot()
+            snap = self.fleet.snapshot()
+        return self._merge_telemetry(snap)
 
     def submit(self, commands: List[Command]) -> List[CommandAck]:
         with self._lock:
             return list(self.fleet.submit(commands))
 
     def status(self) -> Dict[str, Any]:
-        return {
+        doc = {
             "backend": self.backend_name,
             "real_time": self.fleet.is_real_time(),
             "sim_minutes_per_s": None if self.fleet.is_real_time() else self.sim_minutes_per_s,
         }
+        if self.telemetry is not None:
+            doc["telemetry"] = self.telemetry.status()
+        elif self.telemetry_error:
+            doc["telemetry"] = {"source": None, "error": self.telemetry_error}
+        return doc
+
+    # -- real telemetry --------------------------------------------------------
+    def _merge_telemetry(self, snap: FleetSnapshot) -> FleetSnapshot:
+        """Add (or, when mapped onto an existing id, replace) real tractors."""
+        if self.telemetry is None:
+            return snap
+        try:
+            real = self.telemetry.tractor_states()
+        except Exception:                                          # noqa: BLE001
+            return snap
+        if not real:
+            return snap
+        by_id = {t.id: t for t in real}
+        merged = [by_id.pop(t.id, t) for t in snap.tractors]
+        merged.extend(by_id.values())
+        return FleetSnapshot(grid=snap.grid, tractors=merged,
+                             chargers=snap.chargers, loads=snap.loads)
+
+    def telemetry_document(self) -> Dict[str, Any]:
+        """``GET /api/telemetry`` -- honest even when nothing is configured."""
+        if self.telemetry is not None:
+            return self.telemetry.document()
+        if self.telemetry_error:
+            return {"state": "failed", "mode": None, "source": None, "tractors": [],
+                    "error": self.telemetry_error}
+        return {"state": "inactive", "mode": None, "source": None, "tractors": [],
+                "error": "",
+                "detail": "no telemetry source configured (integrations.telemetry.source "
+                          "/ HARVEST_TELEMETRY_SOURCE=csv, or ./run_harvest_dashboard.sh replay)"}
 
     def device_diagnostics(self) -> List[Dict[str, Any]]:
         """Per-device rows for the Diagnostics view.
@@ -187,9 +243,11 @@ class FleetRuntime:
         diag = getattr(self.fleet, "diagnostics", None)
         if callable(diag):
             with self._lock:
-                return diag()
+                rows = list(diag())
+            return rows + self._telemetry_rows()
         now = time.time()
-        snap = self.snapshot()
+        with self._lock:
+            snap = self.fleet.snapshot()          # backend only: real rows come from telemetry
         rows: List[Dict[str, Any]] = []
         for t in snap.tractors:
             rows.append(_sim_row(t.id, "tractor", now, {
@@ -206,12 +264,23 @@ class FleetRuntime:
             "grid_draw_kw": round(snap.grid.grid_draw_kw, 3),
             "pv_kw": round(snap.grid.pv_kw, 3),
             "grid_cap_kw": round(snap.grid.grid_cap_kw, 3)}))
-        return rows
+        return rows + self._telemetry_rows()
+
+    def _telemetry_rows(self) -> List[Dict[str, Any]]:
+        """Device rows for real tractors, tagged with the source kind (``csv-replay``)."""
+        if self.telemetry is None:
+            return []
+        try:
+            return self.telemetry.device_rows()
+        except Exception:                                          # noqa: BLE001
+            return []
 
     def close(self) -> None:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+        if self.telemetry is not None:
+            self.telemetry.close()
         close = getattr(self.fleet, "close", None)
         if callable(close):
             close()

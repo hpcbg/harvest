@@ -109,6 +109,28 @@ def _get_task_service():
                 _TASK_SERVICE = None
         return _TASK_SERVICE
 
+# ── Telemetry analysis cache ──────────────────────────────────────────────────
+# The calibration summary of the configured telemetry source's history.  One
+# pass over the mission (a second or two) is enough; it never changes while
+# the source does not, so it is computed on first request and kept.
+_TELEMETRY_ANALYSIS: Dict[str, Any] = {}
+
+
+def _telemetry_analysis(runtime) -> Dict[str, Any]:
+    service = getattr(runtime, "telemetry", None)
+    if service is None:
+        return {"state": "inactive", "error": "no telemetry source configured"}
+    with _FLEET_LOCK:
+        if "result" not in _TELEMETRY_ANALYSIS:
+            from harvest_integrations.telemetry.analysis import MissionAnalysis
+            cfg = load_yaml_with_local(CONFIG_FILE)
+            model = (cfg.get("tractors") or {}).get("model") or {}
+            analysis = MissionAnalysis(service.source.history(), harvest_model=model)
+            _TELEMETRY_ANALYSIS["result"] = {
+                "state": "ok", "source": service.source.describe(), **analysis.run()}
+        return _TELEMETRY_ANALYSIS["result"]
+
+
 # ── Operations-run store ──────────────────────────────────────────────────────
 # Single-user local dashboard: retaining only the latest successful Operations run
 # in memory is sufficient.  ROI must be based strictly on this run.
@@ -406,6 +428,34 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "harvest_integrations not available"}, 501)
             else:
                 self._send_json({"clients": _CLIENTS.statuses()})
+
+        elif path == "/api/telemetry":
+            # Real ZETRABOT telemetry: source description, replay progress and
+            # the canonical state of every real tractor (read-only; the FIWARE
+            # sync daemon mirrors it as TractorTelemetry entities).  Answers
+            # 200 with state "inactive" when no source is configured, so
+            # consumers can tell "off" from "broken".
+            runtime = _get_fleet_runtime()
+            if runtime is None:
+                self._send_json({"error": "harvest_integrations not available"}, 501)
+            else:
+                try:
+                    self._send_json(runtime.telemetry_document())
+                except Exception as e:
+                    self._send_json({"error": f"telemetry document failed: {e}"}, 500)
+
+        elif path == "/api/telemetry/analysis":
+            # Energy-model calibration of the configured source's full history
+            # (computed once, cached).  Every figure is derived from the
+            # export's own signals; see harvest_integrations/telemetry/analysis.py.
+            runtime = _get_fleet_runtime()
+            if runtime is None:
+                self._send_json({"error": "harvest_integrations not available"}, 501)
+            else:
+                try:
+                    self._send_json(_telemetry_analysis(runtime))
+                except Exception as e:
+                    self._send_json({"error": f"telemetry analysis failed: {e}"}, 500)
 
         elif path == "/health":
             self._send_json({"status": "ok", "config": str(CONFIG_FILE)})

@@ -76,3 +76,10 @@ ros2_ws/log/
 # Keep tracked exceptions
 !images/*.png
 !config.local.yaml.example
+# Deterministic ZETRABOT telemetry fixture derived from the real export
+# (tests/test_telemetry.py) — the real mission itself stays untracked.
+!tests/fixtures/*.csv
+
+# Telemetry — the supplied mission export + report at the repo ROOT only
+# (anchored: harvest_integrations/telemetry/ is source code and stays tracked)
+/telemetry/
