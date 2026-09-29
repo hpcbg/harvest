@@ -241,6 +241,30 @@ class ZetrabotTelemetry:
         return out
 
 
+# Provenance of every canonical field (see telemetry/kpi.py for the classes).
+# MEASURED = present on the wire; DERIVED = computed from measured values
+# only; ESTIMATED = computed under an assumption that is not confirmed;
+# MISSING = not in this source at all.  Shown next to the values so a
+# derived or model-dependent number never looks like a measurement.
+FIELD_PROVENANCE: Dict[str, str] = {
+    **{name: "MEASURED" for name in (
+        "soc_pct", "battery_voltage_v", "battery_current_a", "battery_temp_c",
+        "discharged_energy_session_kwh", "aux_soc_pct", "aux_battery_voltage_v", "speed_kmh",
+        "wheel_speed_rpm", "motor_current_a", "motor_temp_c", "controller_motor_temp_c",
+        "oil_temp_c", "pto_active", "pto_speed_rpm", "pto_current_a", "pto_temp_c",
+        "implement_speed_rpm", "implement_current_a", "implement_temp_c", "drive_active",
+        "parked", "drive_mode", "move_mode", "lights_on", "shovel_active",
+        "steering_angle_deg", "brake_pedal_pct", "hydraulic_pressure_bar", "lifetime_km",
+        "lifetime_hours")},
+    "battery_power_kw": "DERIVED",                    # V x I / 1000
+    "discharged_energy_kwh": "ESTIMATED",             # session-counter semantics unconfirmed
+    "estimated_remaining_energy_kwh": "ESTIMATED",    # SOC x CONFIGURED capacity
+    "nominal_capacity_kwh": "CONFIGURED",
+    "position": "MISSING",                            # no GPS in the export
+    "charging": "MISSING",                            # no charging-state stream
+}
+
+
 # --------------------------------------------------------------------------- #
 #  Source seam
 # --------------------------------------------------------------------------- #
@@ -301,7 +325,7 @@ class TelemetrySink(ABC):
 
 
 __all__ = [
-    "SOURCE_AWS_IOT", "SOURCE_AWS_S3", "SOURCE_AWS_TIMESTREAM", "SOURCE_CSV_REPLAY",
+    "FIELD_PROVENANCE", "SOURCE_AWS_IOT", "SOURCE_AWS_S3", "SOURCE_AWS_TIMESTREAM", "SOURCE_CSV_REPLAY",
     "SOURCE_REST", "MessageCallback", "Subscription", "TelemetryMessage", "TelemetrySink",
     "TelemetrySource", "ZetrabotTelemetry", "iso_utc", "parse_timestamp", "sort_messages",
 ]

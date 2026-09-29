@@ -25,7 +25,9 @@ Generic telemetry ingestion for HARVEST -- independent of AWS, CSV and FIWARE.
                        unknown-field preservation, derived power / cumulative energy);
 * :mod:`replay`     -- original-timeline replay with acceleration and gap compression;
 * :mod:`service`    -- wiring into ``FleetRuntime`` / Diagnostics / FIWARE;
-* :mod:`analysis`   -- energy-model calibration against the real mission.
+* :mod:`analysis`   -- energy-model calibration against the real mission;
+* :mod:`kpi`        -- mission KPIs with provenance, real-vs-model comparison,
+                       rule-based findings and JSON/CSV export.
 
 Telemetry ingestion is read-only.  Robot control stays in
 ``harvest_integrations.devices`` (Modbus / OPC-UA) -- the two never mix.

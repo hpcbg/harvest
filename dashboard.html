@@ -207,6 +207,56 @@
     .tele-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--text2)}
     .tele-bar{height:5px;background:var(--bg3);border:1px solid var(--border);border-radius:3px;overflow:hidden;flex:1;min-width:120px}
     .tele-fill{height:100%;background:var(--green);width:0}
+    /* Mission KPIs & model validation.  Every value carries its provenance
+       badge; MISSING values render as "n/a" with the reason, never as 0. */
+    :root{--reg-1:#2a78d6;--reg-2:#eb6834;--reg-3:#1baf7a;--reg-4:#eda100}
+    [data-theme="dark"]{--reg-1:#3987e5;--reg-2:#d95926;--reg-3:#199e70;--reg-4:#c98500}
+    .mk-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--text2)}
+    .mk-head .grow{flex:1}
+    .mk-btn{font-size:10px;font-family:var(--mono);padding:4px 9px;border-radius:5px;border:1px solid var(--border2);
+      background:var(--bg3);color:var(--text2);text-decoration:none;cursor:pointer}
+    .mk-btn:hover{border-color:var(--amber);color:var(--amber)}
+    .mk-legend{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;font-size:10px;color:var(--text3);align-items:center}
+    .mk-group{margin-top:14px}
+    .mk-gt{font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+    .mk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(172px,1fr));gap:8px}
+    .mk-card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);padding:9px 11px;min-width:0}
+    .mk-card.missing{background:transparent;border-style:dashed}
+    .mk-card .ml{font-size:10px;color:var(--text3);display:flex;justify-content:space-between;gap:6px;align-items:flex-start}
+    .mk-card .mv{font-family:var(--mono);font-size:17px;font-weight:700;color:var(--text);margin-top:4px;word-break:break-word}
+    .mk-card .mv .u{font-size:10px;font-weight:400;color:var(--text3);margin-left:3px}
+    .mk-card .md{font-size:10px;color:var(--text3);margin-top:3px;line-height:1.4;word-break:break-word}
+    .mk-card .mf{font-size:9px;color:var(--amber);margin-top:3px;line-height:1.35}
+    .pv{font-size:8px;font-family:var(--mono);font-weight:700;padding:1px 5px;border-radius:3px;white-space:nowrap;letter-spacing:.02em}
+    .pv-MEASURED{background:var(--green-lt);color:var(--green)}
+    .pv-DERIVED{background:var(--blue-lt);color:var(--blue)}
+    .pv-CONFIGURED{background:var(--bg2);color:var(--text2);border:1px solid var(--border2)}
+    .pv-ESTIMATED{background:var(--amber-lt);color:var(--amber)}
+    .pv-MISSING{background:var(--red-lt);color:var(--red)}
+    .mk-more{margin-top:6px;font-size:11px;color:var(--text3)}
+    .mk-more summary{cursor:pointer;user-select:none}
+    .mk-more .mk-grid{margin-top:6px}
+    .mk-bar{display:flex;gap:2px;height:14px;margin-top:6px}
+    .mk-bar span{display:block;height:100%;border-radius:3px}
+    .mk-bleg{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:6px;font-size:10px;color:var(--text2)}
+    .mk-bleg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+    .mk-table{width:100%;border-collapse:collapse;font-size:11px}
+    .mk-table th{text-align:left;font-size:10px;color:var(--text3);font-weight:600;padding:5px 8px;border-bottom:1px solid var(--border2);white-space:nowrap}
+    .mk-table td{padding:5px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+    .mk-table td.n{font-family:var(--mono);text-align:right;white-space:nowrap}
+    .mk-table tr.na td{color:var(--text3)}
+    .mk-table .mk-note,.mk-note{font-size:10px;color:var(--text3);line-height:1.4}
+    .mk-find{display:flex;flex-direction:column;gap:5px}
+    .mk-find div{display:flex;gap:8px;align-items:flex-start;font-size:11px;line-height:1.45;color:var(--text2)}
+    .lv{font-size:8px;font-family:var(--mono);font-weight:700;padding:2px 6px;border-radius:3px;white-space:nowrap;text-transform:uppercase;margin-top:1px}
+    .lv-ok{background:var(--green-lt);color:var(--green)}
+    .lv-info{background:var(--blue-lt);color:var(--blue)}
+    .lv-warning{background:var(--amber-lt);color:var(--amber)}
+    .lv-limitation{background:var(--bg3);color:var(--text3);border:1px solid var(--border2)}
+    .mk-sub{font-size:12px;font-weight:600;color:var(--text2);margin:16px 0 7px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline}
+    .mk-lim{font-size:11px;color:var(--text2);line-height:1.5;padding-left:16px}
+    .mk-lim li{margin-bottom:2px}
+    .mk-lim .sc{font-size:9px;font-family:var(--mono);color:var(--text3);margin-right:4px}
     .diag-panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--rl);padding:16px}
     .diag-title{font-size:13px;font-weight:600;margin-bottom:10px;display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
     .diag-note{font-size:10px;color:var(--text3);font-weight:400}
@@ -482,6 +532,11 @@
           <span class="diag-note" id="diag-updated">waiting for first refresh…</span></div>
         <div class="diag-grid" id="diag-services"></div>
       </div>
+      <div class="diag-panel" id="mk-panel">
+        <div class="diag-title">Real ZETRABOT mission — KPIs &amp; model validation
+          <span class="diag-note" id="mk-note">loading…</span></div>
+        <div id="mk-body" style="font-size:12px;color:var(--text3)">loading mission KPIs…</div>
+      </div>
       <div class="diag-panel">
         <div class="diag-title">Devices
           <span class="diag-note">read through the common DeviceIO abstraction —
@@ -495,7 +550,7 @@
         </div>
       </div>
       <div class="diag-panel">
-        <div class="diag-title">Real telemetry (ZETRABOT)
+        <div class="diag-title">Real telemetry (ZETRABOT) — low-level signals
           <span class="diag-note" id="tele-note">source · mission · replay state</span></div>
         <div id="tele-body" style="font-size:12px;color:var(--text3)">no real telemetry source configured</div>
       </div>
@@ -924,7 +979,7 @@ function switchView(v){
 let diagTimer=null, demoTimer=null;
 const escDiag=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-function startDiag(){ fetchDiag(); if(!diagTimer) diagTimer=setInterval(fetchDiag,3000); }
+function startDiag(){ fetchDiag(); fetchMissionKpis(false); if(!diagTimer) diagTimer=setInterval(fetchDiag,3000); }
 function stopDiag(){ if(diagTimer){clearInterval(diagTimer);diagTimer=null;}
   if(demoTimer){clearInterval(demoTimer);demoTimer=null;} }
 
@@ -943,7 +998,7 @@ async function fetchDiag(){
       'updated '+new Date().toLocaleTimeString();
   }catch(e){
     err.textContent='Diagnostics unavailable: '+e.message+
-      '\n(the integration layer needs harvest_integrations — see README "External Integrations")';
+      '\n(the integration layer needs harvest_integrations — see docs/integrations.md)';
     err.style.display='block';
   }
 }
@@ -1022,6 +1077,7 @@ function renderTelemetry(doc){
   }
   for(const t of tractors){
     const kv=(k,v,age)=>`<div class="tele-kv"><div class="tk">${escDiag(k)}</div><div class="tv">${v}</div>${age?`<div class="tage">${escDiag(age)}</div>`:''}</div>`;
+    // values without a badge are MEASURED signals (see doc.provenance)
     const pw=t.battery_power_kw;
     html+=`<div style="margin-top:12px;font-size:12px;font-weight:600;color:var(--text2)">
       ${escDiag(t.harvest_id)} <span style="font-weight:400;color:var(--text3)">· ZETRABOT tractor ${escDiag(t.tractor_id)} · mission ${escDiag(t.mission_id||'?')} · source ${escDiag(t.source)} · ${t.available?'<span class="dstate ds-healthy">present</span>':'<span class="dstate ds-inactive">recording ended</span>'}</span></div>
@@ -1029,9 +1085,9 @@ function renderTelemetry(doc){
       ${kv('Latest telemetry',escDiag(t.timestamp||'n/a'),`${t.messages||0} messages ingested`)}
       ${kv('State of charge',teleFmt(t.soc_pct,' %',1),teleAge(t,'soc_pct'))}
       ${kv('Battery voltage / current',`${teleFmt(t.battery_voltage_v,' V',1)} / ${teleFmt(t.battery_current_a,' A',1)}`,teleAge(t,'battery_current_a'))}
-      ${kv('Battery power (derived V×I)',teleFmt(pw,' kW'),pw===null||pw===undefined?'needs voltage and current within 120 s':'')}
-      ${kv('Discharged energy (mission)',teleFmt(t.discharged_energy_kwh,' kWh'),`session counter ${teleFmt(t.discharged_energy_session_kwh,' kWh')} · ${t.session_resets||0} resets`)}
-      ${kv('Energy at nominal capacity',teleFmt(t.energy_kwh_nominal,' kWh'),'SOC × config capacity, not measured')}
+      ${kv('Battery power (V×I)',teleFmt(pw,' kW')+' '+pvBadge('DERIVED'),pw===null||pw===undefined?'needs voltage and current within 120 s':'voltage × current')}
+      ${kv('Discharged energy (mission)',teleFmt(t.discharged_energy_kwh,' kWh')+' '+pvBadge('ESTIMATED'),`raw DischEnrgActualSesion ${teleFmt(t.discharged_energy_session_kwh,' kWh')} · ${t.session_resets||0} inferred resets (session semantics unconfirmed)`)}
+      ${kv('Estimated remaining energy',teleFmt(t.estimated_remaining_energy_kwh,' kWh')+' '+pvBadge('ESTIMATED'),`SOC × configured capacity (${teleFmt(doc.nominal_capacity_kwh,' kWh',1)}) — not a measured value`)}
       ${kv('Battery / oil temperature',`${teleFmt(t.battery_temp_c,' °C',0)} / ${teleFmt(t.oil_temp_c,' °C',0)}`,teleAge(t,'battery_temp_c'))}
       ${kv('Motor temperatures',teleFmt(t.motor_temp_c),`PTO ${teleFmt(t.pto_temp_c,' °C',0)}`)}
       ${kv('PTO',`${teleFmt(t.pto_active)} · ${teleFmt(t.pto_speed_rpm,' rpm',0)} · ${teleFmt(t.pto_current_a,' A',1)}`,teleAge(t,'pto_active'))}
@@ -1042,11 +1098,140 @@ function renderTelemetry(doc){
       ${kv('Steering / brake / hydraulic',`${teleFmt(t.steering_angle_deg,'°',1)} · ${teleFmt(t.brake_pedal_pct,' %',0)} · ${teleFmt(t.hydraulic_pressure_bar,' bar',0)}`)}
       ${kv('Aux battery',`${teleFmt(t.aux_soc_pct,' %',1)} · ${teleFmt(t.aux_battery_voltage_v,' V',1)}`)}
       ${kv('Lifetime counters',`${teleFmt(t.lifetime_km,' km',1)} · ${teleFmt(t.lifetime_hours,' h',1)}`)}
-      ${kv('Position (GPS)','n/a','not in this telemetry — never fabricated')}
+      ${kv('Position (GPS)','n/a '+pvBadge('MISSING'),'not in this telemetry — never fabricated')}
+      ${kv('Charging state','n/a '+pvBadge('MISSING'),'no charging-state stream in this telemetry')}
       ${kv('Unknown signals preserved',escDiag(Object.keys(t.unknown_signals||{}).join(', ')||'none'),`${t.out_of_order||0} out-of-order · ${t.invalid_values||0} non-numeric`)}
       </div>`;
   }
   body.innerHTML=html;
+}
+
+/* ── Mission KPIs & model validation ─────────────────────────────────────
+   GET /api/telemetry/kpis (harvest_integrations/telemetry/kpi.py).  Fetched
+   once when Diagnostics opens (the mission does not change) and on demand.
+   The UI only lays out what the server classified: provenance, formulas,
+   findings and proposals are computed server-side by fixed rules. */
+let mkLoaded=false;
+const MK_HEADLINE={
+  mission:['duration_h','distance_km','moving_h','pto_active_h'],
+  energy:['energy_kwh','soc_delta_pct','mean_power_kw','peak_power_kw','energy_per_km','energy_per_moving_h',
+          'energy_pto_kwh','energy_moving_kwh','energy_idle_kwh','estimated_remaining_energy_kwh'],
+  validation:['configured_capacity_kwh','estimated_capacity_kwh','model_energy_kwh','energy_error_pct','soc_error_pct_points'],
+  operational:['battery_temp_max_c','motor_temp_max_c','pto_motor_temp_max_c','pto_utilisation_pct','peak_current_a','operating_state_shares_pct'],
+};
+const MK_REGIMES=[['pto_moving','PTO on, moving','var(--reg-1)'],['pto_stationary','PTO on, stationary','var(--reg-2)'],
+  ['moving_no_pto','Moving, PTO off','var(--reg-3)'],['stationary_no_pto','Idle (stationary, PTO off)','var(--reg-4)'],
+  ['unclassified','Unclassified','var(--gray)']];
+function pvBadge(p){return `<span class="pv pv-${escDiag(p)}" title="${escDiag(p)}">${escDiag(p)}</span>`;}
+function mkNum(v,unit){
+  if(v===null||v===undefined) return 'n/a';
+  if(typeof v!=='number') return escDiag(v);
+  const a=Math.abs(v), nd=a>=100?0:(a>=10?1:2);
+  let t=v.toLocaleString(undefined,{maximumFractionDigits:nd,minimumFractionDigits:0});
+  return t;
+}
+function mkUnit(u){return u==='degC'?'°C':u;}
+function mkCard(it){
+  if(it.key==='operating_state_shares_pct') return mkShares(it);
+  const missing=it.provenance==='MISSING';
+  const signed=/error|_pts$|check/.test(it.key)&&typeof it.value==='number'&&it.value>0?'+':'';
+  const tip=[it.method, it.sources&&it.sources.length?'sources: '+it.sources.join(', '):'',
+    (it.flags||[]).length?'flags: '+it.flags.join('; '):''].filter(Boolean).join('\n');
+  return `<div class="mk-card${missing?' missing':''}" title="${escDiag(tip)}">
+    <div class="ml"><span>${escDiag(it.label)}</span>${pvBadge(it.provenance)}</div>
+    <div class="mv">${missing?'n/a':signed+mkNum(it.value,it.unit)}${!missing&&it.unit?`<span class="u">${escDiag(mkUnit(it.unit))}</span>`:''}</div>
+    <div class="md">${escDiag(it.detail||it.method)}</div>
+    ${(it.flags||[]).length?`<div class="mf">⚑ ${escDiag(it.flags.join(' · '))}</div>`:''}
+  </div>`;
+}
+function mkShares(it){
+  const v=it.value||{};
+  const parts=MK_REGIMES.filter(([k])=>v[k]>0);
+  return `<div class="mk-card" style="grid-column:1/-1" title="${escDiag(it.method)}">
+    <div class="ml"><span>${escDiag(it.label)} — share of powered-on time</span>${pvBadge(it.provenance)}</div>
+    <div class="mk-bar" role="img" aria-label="${escDiag(parts.map(([k,l])=>`${l} ${v[k]}%`).join(', '))}">
+      ${parts.map(([k,l,c])=>`<span style="flex:${v[k]};background:${c}" title="${escDiag(l)}: ${v[k]}%"></span>`).join('')}</div>
+    <div class="mk-bleg">${parts.map(([k,l,c])=>`<span><i style="background:${c}"></i>${escDiag(l)} <strong>${v[k]}%</strong></span>`).join('')}</div>
+  </div>`;
+}
+function mkErrCell(r){
+  if(r.error_pct===null||r.error_pct===undefined) return '<td class="n">—</td>';
+  const a=Math.abs(r.error_pct), lv=a<=10?'ok':(a<=25?'info':'warning');
+  return `<td class="n"><span class="lv lv-${lv}">${r.error_pct>0?'+':''}${mkNum(r.error_pct)} %</span></td>`;
+}
+async function fetchMissionKpis(refresh){
+  if(mkLoaded&&!refresh) return;
+  const body=document.getElementById('mk-body'), note=document.getElementById('mk-note');
+  try{
+    const r=await fetch(SRV+'/api/telemetry/kpis'+(refresh?'?refresh=1':''),{mode:'cors'});
+    const d=await r.json();
+    renderMissionKpis(d); mkLoaded=(d.state==='ok');
+  }catch(e){
+    note.textContent='unavailable';
+    body.textContent='Mission KPIs unavailable: '+e.message;
+  }
+}
+function renderMissionKpis(d){
+  const body=document.getElementById('mk-body'), note=document.getElementById('mk-note');
+  if(!d||d.state!=='ok'){
+    note.textContent=d&&d.state==='failed'?'failed':'inactive — optional';
+    body.innerHTML=`${escDiag((d&&d.error)||'no mission data')}<br>Place the Zetrack export at
+      <span class="diag-cmd" style="display:inline-block"><span class="c">telemetry/telemetria_mision_63.csv</span></span>
+      or replay one with <span class="diag-cmd" style="display:inline-block"><span class="c">./run_harvest_dashboard.sh replay --file &lt;csv&gt; --speed 20</span></span>`;
+    return;
+  }
+  const s=d.summary||{}, inp=d.input||{}, K=d.kpis||{};
+  const modeTxt={offline:'offline analysis of the configured export (replay not running)',
+    replay:'full-mission analysis of the replay source', live:'analysis of the live source history'}[d.mode]||d.mode;
+  note.textContent=`schema ${d.schema} · analysis v${d.analysis_version}`;
+  let h=`<div class="mk-head">
+    <span><strong style="color:var(--text)">Mission ${escDiag(s.mission_id)}</strong> · tractor ${escDiag(s.tractor_id)}
+      · ${escDiag((inp.messages||0).toLocaleString())} records · ${escDiag(inp.file||inp.kind)}
+      <span style="color:var(--text3)">· ${escDiag(modeTxt)}${inp.sha256?` · sha256 ${escDiag(inp.sha256.slice(0,12))}…`:''}</span></span>
+    <span class="grow"></span>
+    <a class="mk-btn" href="${SRV}/api/telemetry/kpis.json" title="Full KPI document: values, provenance, formulas, comparison, findings, limitations">Export JSON</a>
+    <a class="mk-btn" href="${SRV}/api/telemetry/kpis.csv" title="One row per KPI with provenance, formula, source signals and flags">Export CSV</a>
+    <a class="mk-btn" href="${SRV}/api/telemetry/kpis.csv?format=wide" title="One row per mission (for multi-mission tables)">CSV (wide)</a>
+    <span class="mk-btn" onclick="fetchMissionKpis(true)">Recompute</span>
+  </div>
+  <div class="mk-legend">Provenance:
+    ${Object.entries(d.provenance_classes||{}).map(([k,v])=>`<span title="${escDiag(v)}">${pvBadge(k)}</span>`).join('')}
+    <span>— hover a card for its formula, source signals and quality flags</span></div>`;
+  for(const g of d.groups||[]){
+    const head=(MK_HEADLINE[g.id]||[]).filter(k=>K[k]);
+    const rest=g.kpis.filter(k=>!head.includes(k)&&K[k]);
+    h+=`<div class="mk-group"><div class="mk-gt">${escDiag(g.title)}</div>
+      <div class="mk-grid">${head.map(k=>mkCard(K[k])).join('')}</div>
+      ${rest.length?`<details class="mk-more"><summary>${rest.length} more ${escDiag(g.title.toLowerCase())} values</summary>
+        <div class="mk-grid">${rest.map(k=>mkCard(K[k])).join('')}</div></details>`:''}</div>`;
+  }
+  const c=d.comparison||{rows:[]};
+  h+=`<div class="mk-sub">Real vs HARVEST model
+      <span class="diag-note">HARVEST model = ${escDiag(c.formula||'n/a')} · ${escDiag(c.sign_convention||'')}</span></div>
+    <div style="overflow-x:auto"><table class="mk-table"><thead><tr><th>Metric</th><th style="text-align:right">Real</th>
+      <th style="text-align:right">HARVEST model</th><th style="text-align:right">Difference</th><th style="text-align:right">Error</th><th>Basis</th></tr></thead><tbody>
+    ${c.rows.map(r=>{const na=r.status!=='compared';const u=r.unit?' '+escDiag(r.unit):'';
+      return `<tr class="${na?'na':''}"><td>${escDiag(r.metric)}</td>
+        <td class="n">${r.real===null?'n/a':mkNum(r.real)+u} ${pvBadge(r.real_provenance)}</td>
+        <td class="n">${r.model===null?'n/a':mkNum(r.model)+u} ${pvBadge(r.model_provenance)}</td>
+        <td class="n">${r.difference===null?'—':(r.difference>0?'+':'')+mkNum(r.difference)+u}</td>
+        ${mkErrCell(r)}
+        <td class="mk-note">${na?'<strong>unavailable</strong> — ':''}${escDiag(r.note)}${(r.flags||[]).length?`<br><span style="color:var(--amber)">⚑ ${escDiag(r.flags.join(' · '))}</span>`:''}</td></tr>`;}).join('')}
+    </tbody></table></div>`;
+  h+=`<div class="mk-sub">Validation summary <span class="diag-note">fixed rules over the numbers above — thresholds ±10 % / ±25 %</span></div>
+    <div class="mk-find">${(d.findings||[]).map(f=>`<div><span class="lv lv-${escDiag(f.level)}">${escDiag(f.level)}</span><span>${escDiag(f.text)}</span></div>`).join('')}</div>`;
+  const props=d.calibration_proposals||[];
+  h+=`<div class="mk-sub">Calibration proposals <span class="diag-note">for review — never written to config.yaml</span></div>`;
+  h+=props.length?`<div style="overflow-x:auto"><table class="mk-table"><thead><tr><th>Parameter</th><th style="text-align:right">Current</th>
+      <th style="text-align:right">Proposed</th><th>Confidence</th><th>Basis</th></tr></thead><tbody>
+    ${props.map(p=>`<tr><td style="font-family:var(--mono);font-size:10px">${escDiag(p.parameter)}</td>
+      <td class="n">${mkNum(p.current)} ${escDiag(p.unit)}</td><td class="n">${mkNum(p.proposed)} ${escDiag(p.unit)}</td>
+      <td>${escDiag(p.confidence)}</td><td class="mk-note">${escDiag(p.basis)}</td></tr>`).join('')}</tbody></table></div>`
+    :'<div style="font-size:11px">no proposals — the data do not support a change</div>';
+  h+=`<div class="mk-note" style="font-size:10px;color:var(--text3);margin-top:5px">${escDiag(d.calibration_note||'')}</div>`;
+  h+=`<div class="mk-sub">Limitations</div><ul class="mk-lim">
+    ${(d.limitations||[]).map(l=>`<li><span class="sc">${escDiag(l.scope)}</span>${escDiag(l.text)}</li>`).join('')}</ul>`;
+  body.innerHTML=h;
 }
 
 function renderDiagDevices(devices){

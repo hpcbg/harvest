@@ -437,7 +437,7 @@ roi:
 # Everything below is OPTIONAL: the simulator, dashboard, MARL, predictor and
 # ROI layers run unchanged without it.  The live fleet is exposed by server.py
 # under /api/fleet/* and consumed by the FIWARE sync daemon and the ROS 2
-# bridge (see docker-compose.yml and README "External integrations").
+# bridge (see docker-compose.yml and docs/integrations.md).
 integrations:
   fleet:
     # Live fleet backend (env override HARVEST_FLEET_BACKEND):
@@ -472,7 +472,7 @@ integrations:
   # Real ZETRABOT telemetry — INBOUND data only, separate from the control
   # path above (commands still go FleetInterface -> DeviceIO -> Modbus/OPC-UA).
   # Env overrides: HARVEST_TELEMETRY_SOURCE / _FILE / _SPEED / _MAX_GAP_S /
-  # _LOOP / _START / _END.  See README "Real ZETRABOT telemetry".
+  # _LOOP / _START / _END.  See docs/telemetry.md.
   telemetry:
     #   none — off (default)
     #   csv  — replay a Zetrack CSV export on its original timestamps

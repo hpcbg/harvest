@@ -28,6 +28,22 @@ Method notes
 * **PTO / motion / idle** -- the ``PtoLed`` and ``GoLed`` indicators (held)
   split the timeline into PTO-active, drive-active and idle periods; the
   power integral is attributed to each.
+* **Exclusive regimes** -- for the model comparison every powered interval
+  is put in exactly ONE of: PTO on & moving, PTO on & stationary, moving
+  with PTO off, stationary with PTO off ("idle"), or *unclassified* while the
+  PTO or speed state has not been observed yet (asynchronous start: nothing
+  is assumed before the first ``PtoLed`` / ``SpeedDisplay`` arrives).  The
+  held ``SpeedDisplay`` is also integrated per regime; that integral is only
+  used to *allocate* the ``LifetimeKm`` distance between regimes.
+* **Dropouts** -- a ``MainBatteryVoltage`` of exactly 0 V is physically
+  impossible for a running traction battery; in this export it always
+  arrives together with a 0 degC ``MainBatteryTemp`` in the same
+  ``BatteryStatus1`` message.  Such readings are treated as invalid: the
+  previous voltage is held and exact-zero temperatures are left out of the
+  thermal statistics.  Both are counted (``quality``) so the rule is visible.
+* **Power-off gaps** -- for every gap longer than ``gap_cap_s`` the last SOC
+  before and the first SOC after are recorded, so the SOC change while the
+  tractor was off can be compared with the model's idle drain.
 * **Distance** -- the export has no GPS; the only distance signal is the
   ``LifetimeKm`` counter, which contains an outlier in this mission (a 108 km
   reading among ~170 km readings).  The delta is computed after discarding
@@ -48,6 +64,18 @@ from .model import TelemetryMessage, iso_utc, sort_messages
 from .normalizer import _SessionAccumulator, _num
 
 DEFAULT_GAP_CAP_S = 120.0
+# Bumped whenever a formula below changes, and carried into every exported
+# KPI summary so a published number can be traced to the code that made it.
+ANALYSIS_VERSION = "2"
+# The exclusive operating regimes, in display order.
+EXCLUSIVE_REGIMES = ("pto_moving", "pto_stationary", "moving_no_pto", "stationary_no_pto",
+                     "unclassified")
+# Signal-name fragments that would indicate a position or charging stream.
+# Nothing in the Zetrack dictionary matches; if a future export adds one it
+# shows up here instead of being silently ignored.
+_POSITION_HINTS = ("gps", "latitude", "longitude")
+_POSITION_NAMES = ("lat", "lon", "lng")
+_CHARGING_HINTS = ("charg", "plug", "evse")
 ESTIMATE_LABEL = ("ESTIMATE derived from one mission (discharged energy / SOC change); "
                   "requires confirmation from the ZETRABOT team before use as a specification")
 
@@ -82,6 +110,28 @@ class _Bucket:
     def to_dict(self) -> Dict[str, Any]:
         mean = self.kwh / self.hours if self.hours > 0 else None
         return {"hours": _r(self.hours), "energy_kwh": _r(self.kwh), "mean_power_kw": _r(mean)}
+
+
+class _RegimeBucket(_Bucket):
+    """A :class:`_Bucket` that also integrates the held speed (km)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.speed_km = 0.0
+        self.power_unknown_h = 0.0
+
+    def add_interval(self, dt_h: float, kw: Optional[float], speed: Optional[float]) -> None:
+        self.add(dt_h, kw)
+        if kw is None:
+            self.power_unknown_h += dt_h
+        if speed is not None and speed > 0:
+            self.speed_km += speed * dt_h
+
+    def to_dict(self) -> Dict[str, Any]:
+        out = super().to_dict()
+        out["speed_integral_km"] = _r(self.speed_km)
+        out["power_unknown_h"] = _r(self.power_unknown_h)
+        return out
 
 
 class MissionAnalysis:
@@ -128,6 +178,15 @@ class MissionAnalysis:
 
         total = _Bucket()
         pto_b, drive_b, moving_b, idle_b = _Bucket(), _Bucket(), _Bucket(), _Bucket()
+        exclusive = {name: _RegimeBucket() for name in EXCLUSIVE_REGIMES}
+        idle_drive_engaged = _Bucket()        # stationary, PTO off, GoLed = 1
+        power_unknown_h = 0.0
+        voltage_dropouts = 0
+        zero_temps: Dict[str, int] = {}
+        gaps: List[Dict[str, Any]] = []
+        last_soc: Optional[float] = None
+        soc_increases: List[float] = []
+        signal_names: set = set()
         active_h = 0.0
         gap_count = 0
         gap_h = 0.0
@@ -159,17 +218,37 @@ class MissionAnalysis:
                         moving_b.add(dt_h, kw)
                     if not pto and not go and not (speed and speed > 0):
                         idle_b.add(dt_h, kw)
+                    if kw is None:
+                        power_unknown_h += dt_h
+                    regime = self._regime(pto, speed)
+                    exclusive[regime].add_interval(dt_h, kw, speed)
+                    if regime == "stationary_no_pto" and go:
+                        idle_drive_engaged.add(dt_h, kw)
                 elif dt_s > self.gap_cap_s:
                     gap_count += 1
                     gap_h += dt_s / 3600.0
+                    gaps.append({"start": iso_utc(prev_ts), "end": iso_utc(msg.timestamp),
+                                 "hours": _r(dt_s / 3600.0), "soc_before_pct": last_soc,
+                                 "soc_after_pct": None})
             prev_ts = msg.timestamp
 
             # -- update held state from this message --
             s = msg.signals
+            signal_names.update(s.keys())
             if "MainBatterySOC" in s and _num(s["MainBatterySOC"]) is not None:
-                soc.append((msg.timestamp, _num(s["MainBatterySOC"])))
+                value = _num(s["MainBatterySOC"])
+                if last_soc is not None and value > last_soc:
+                    soc_increases.append(value - last_soc)
+                soc.append((msg.timestamp, value))
+                last_soc = value
+                for gap in gaps:
+                    if gap["soc_after_pct"] is None:
+                        gap["soc_after_pct"] = value
             if "MainBatteryVoltage" in s and _num(s["MainBatteryVoltage"]) is not None:
-                v = _num(s["MainBatteryVoltage"]); voltage.append(v)
+                if _num(s["MainBatteryVoltage"]) == 0.0:
+                    voltage_dropouts += 1          # invalid reading: hold the previous voltage
+                else:
+                    v = _num(s["MainBatteryVoltage"]); voltage.append(v)
             if "BatteryCurrent" in s and _num(s["BatteryCurrent"]) is not None:
                 i = _num(s["BatteryCurrent"]); current.append(i)
                 if i < 0:
@@ -189,14 +268,14 @@ class MissionAnalysis:
                     sessions_energy.append(session.completed_kwh - sum(sessions_energy))
                 session_values.append((msg.timestamp, val))
             if "MainBatteryTemp" in s and _num(s["MainBatteryTemp"]) is not None:
-                battery_temp.append(_num(s["MainBatteryTemp"]))
+                self._temp(battery_temp, zero_temps, "MainBatteryTemp", _num(s["MainBatteryTemp"]))
             if msg.source_message == "MotorTemp":
                 for key, val in s.items():
                     num = _num(val)
                     if num is not None:
-                        motor_temps.setdefault(key, []).append(num)
+                        self._temp(motor_temps.setdefault(key, []), zero_temps, key, num)
             if "OilTemp" in s and _num(s["OilTemp"]) is not None:
-                oil_temp.append(_num(s["OilTemp"]))
+                self._temp(oil_temp, zero_temps, "OilTemp", _num(s["OilTemp"]))
             if "SpeedDisplay" in s and _num(s["SpeedDisplay"]) is not None:
                 speed = _num(s["SpeedDisplay"]); speeds.append(speed)
             if "LifetimeKm" in s and _num(s["LifetimeKm"]) is not None:
@@ -223,8 +302,26 @@ class MissionAnalysis:
             capacity_est = discharged_total / (soc_delta / 100.0)
 
         distance = self._distance(lifetime_km)
+        moving_h = exclusive["pto_moving"].hours + exclusive["moving_no_pto"].hours
+        speed_integral_km = sum(b.speed_km for b in exclusive.values())
+        if distance.get("delta_km") is not None and speed_integral_km > 0:
+            scale = distance["delta_km"] / speed_integral_km
+            for name, bucket in exclusive.items():
+                bucket.allocated_km = bucket.speed_km * scale       # type: ignore[attr-defined]
+        exclusive_doc = {}
+        for name, bucket in exclusive.items():
+            doc = bucket.to_dict()
+            doc["allocated_distance_km"] = _r(getattr(bucket, "allocated_km", None))
+            exclusive_doc[name] = doc
+        exclusive_doc["stationary_no_pto"]["of_which_drive_engaged"] = idle_drive_engaged.to_dict()
+        position_signals = sorted(n for n in signal_names
+                                  if any(h in n.lower() for h in _POSITION_HINTS)
+                                  or n.lower() in _POSITION_NAMES)
+        charging_signals = sorted(n for n in signal_names
+                                  if any(h in n.lower() for h in _CHARGING_HINTS))
 
         result: Dict[str, Any] = {
+            "analysis_version": ANALYSIS_VERSION,
             "mission": {
                 "mission_ids": sorted(missions),
                 "tractor_ids": sorted(tractors),
@@ -292,6 +389,39 @@ class MissionAnalysis:
                 "motors": {k: self._stats(vals) for k, vals in sorted(motor_temps.items())},
             },
             "speed_kmh": self._stats(speeds),
+            "motion": {
+                "moving_h": _r(moving_h),
+                "speed_integral_km": _r(speed_integral_km),
+                "mean_moving_speed_kmh": (_r(distance["delta_km"] / moving_h)
+                                          if distance.get("delta_km") is not None and moving_h > 0
+                                          else None),
+                "speed_observed": bool(speeds),
+                "pto_observed": pto is not None,
+                "note": "moving = held SpeedDisplay > 0; the speed integral only allocates the "
+                        "LifetimeKm distance between regimes",
+            },
+            "exclusive_regimes": {
+                **exclusive_doc,
+                "note": "mutually exclusive: each powered interval is in exactly one regime; "
+                        "'unclassified' = PTO or speed state not yet observed",
+            },
+            "power_off_gaps": gaps,
+            "charging_evidence": {
+                "soc_increase_events": len(soc_increases),
+                "max_soc_increase_pct": max(soc_increases) if soc_increases else None,
+                "regen_current_samples": regen_samples,
+                "charging_signals_seen": charging_signals,
+                "note": "SOC increases and negative current are hints only; the export has no "
+                        "charger or charging-state signal",
+            },
+            "position_signals_seen": position_signals,
+            "quality": {
+                "voltage_dropouts_rejected": voltage_dropouts,
+                "zero_temperature_readings_excluded": dict(sorted(zero_temps.items())),
+                "power_unknown_h": _r(power_unknown_h),
+                "rule": "exact 0 V voltage and exact 0 degC temperature readings are treated as "
+                        "invalid dropouts (they co-occur in BatteryStatus1); counted, not used",
+            },
             "distance": distance,
             "capacity_estimate": {
                 "effective_capacity_kwh": _r(capacity_est, 2),
@@ -312,6 +442,22 @@ class MissionAnalysis:
         return result
 
     # -- helpers --------------------------------------------------------------
+    @staticmethod
+    def _regime(pto: Optional[bool], speed: Optional[float]) -> str:
+        if pto is None or speed is None:
+            return "unclassified"
+        moving = speed > 0
+        if pto:
+            return "pto_moving" if moving else "pto_stationary"
+        return "moving_no_pto" if moving else "stationary_no_pto"
+
+    @staticmethod
+    def _temp(values: List[float], zeros: Dict[str, int], name: str, value: float) -> None:
+        if value == 0.0:
+            zeros[name] = zeros.get(name, 0) + 1
+        else:
+            values.append(value)
+
     @staticmethod
     def _stats(values: Sequence[float]) -> Optional[Dict[str, Any]]:
         if not values:

@@ -13,7 +13,7 @@ Public API
 * :class:`roi.validation.ROIValidationError` – raised on invalid requests.
 
 Energy sharing with neighbouring farms or households is explicitly out of scope
-(see README → "Future work").
+(see docs/roi.md → "Future work").
 """
 
 from .engine import run_roi_analysis

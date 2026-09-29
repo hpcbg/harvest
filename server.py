@@ -131,6 +131,68 @@ def _telemetry_analysis(runtime) -> Dict[str, Any]:
         return _TELEMETRY_ANALYSIS["result"]
 
 
+# ── Mission KPIs / model validation cache ─────────────────────────────────────
+# The KPI document (harvest_integrations/telemetry/kpi.py) of the configured
+# telemetry source.  When no source is running but the configured Zetrack
+# export exists, the file is analysed OFFLINE through the same
+# TelemetrySource.history() call -- labelled as such -- so the mission KPIs
+# are visible without starting a replay.  Cached per (source, config mtime);
+# ?refresh=1 recomputes.
+_TELEMETRY_KPIS: Dict[str, Any] = {}
+_KPI_LOCK = threading.Lock()      # own lock: a first computation must not stall the fleet API
+
+
+def _kpi_source(runtime):
+    """(TelemetrySource, mode) for the KPI view, or (None, reason)."""
+    service = getattr(runtime, "telemetry", None) if runtime is not None else None
+    if service is not None:
+        return service.source, service.mode
+    if runtime is not None and getattr(runtime, "telemetry_error", ""):
+        return None, f"telemetry source failed: {runtime.telemetry_error}"
+    from harvest_integrations.telemetry.service import telemetry_settings
+    from harvest_integrations.telemetry.zetrack import CsvTelemetrySource
+    cfg = load_yaml_with_local(CONFIG_FILE)
+    file = ((telemetry_settings(cfg).get("csv") or {}).get("file"))
+    if not file:
+        return None, "no telemetry source configured"
+    path = Path(str(file))
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    if not path.exists():
+        return None, (f"no telemetry source configured and the configured export {file} is not "
+                      "present (it is git-ignored; copy the Zetrack CSV there)")
+    return CsvTelemetrySource(path), "offline"
+
+
+def _telemetry_kpis(runtime, refresh: bool = False) -> Dict[str, Any]:
+    from harvest_integrations.telemetry.kpi import build_mission_kpis, sha256_file
+    from harvest_integrations.telemetry.analysis import MissionAnalysis
+    source, mode = _kpi_source(runtime)
+    if source is None:
+        return {"state": "failed" if mode.startswith("telemetry source failed") else "inactive",
+                "error": mode}
+    info = source.describe()
+    cfg_mtime = CONFIG_FILE.stat().st_mtime if CONFIG_FILE.exists() else None
+    key = f"{info.get('kind')}|{info.get('file')}|{cfg_mtime}"
+    with _KPI_LOCK:
+        if refresh or _TELEMETRY_KPIS.get("key") != key:
+            cfg = load_yaml_with_local(CONFIG_FILE)
+            model = (cfg.get("tractors") or {}).get("model") or {}
+            messages = list(source.history())
+            info = source.describe()
+            src = {"kind": info.get("kind"), "mode": mode, "messages": len(messages),
+                   "file": Path(info["file"]).name if info.get("file") else None,
+                   "sha256": sha256_file(info["file"]) if info.get("file") else None,
+                   "first_timestamp": info.get("first_timestamp"),
+                   "last_timestamp": info.get("last_timestamp")}
+            doc = build_mission_kpis(MissionAnalysis(messages, harvest_model=model).run(), model,
+                                     source=src, config_file=CONFIG_FILE.name)
+            doc["mode"] = mode
+            _TELEMETRY_KPIS.clear()
+            _TELEMETRY_KPIS.update({"key": key, "doc": doc})
+        return _TELEMETRY_KPIS["doc"]
+
+
 # ── Operations-run store ──────────────────────────────────────────────────────
 # Single-user local dashboard: retaining only the latest successful Operations run
 # in memory is sufficient.  ROI must be based strictly on this run.
@@ -313,6 +375,16 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_download(self, body: str, mime: str, filename: str) -> None:
+        data = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data)
+
     def _send_file(self, path: Path, mime: str) -> None:
         data = path.read_bytes()
         self.send_response(200)
@@ -456,6 +528,32 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(_telemetry_analysis(runtime))
                 except Exception as e:
                     self._send_json({"error": f"telemetry analysis failed: {e}"}, 500)
+
+        elif path in ("/api/telemetry/kpis", "/api/telemetry/kpis.json", "/api/telemetry/kpis.csv"):
+            # Mission KPIs + real-vs-model validation with per-value provenance
+            # (MEASURED / DERIVED / CONFIGURED / ESTIMATED / MISSING).  .json and
+            # .csv are downloads for the paper; ?format=wide gives one CSV row
+            # per mission.  Never writes config.yaml.
+            from urllib.parse import parse_qs, urlparse
+            query = parse_qs(urlparse(self.path).query)
+            runtime = _get_fleet_runtime()
+            try:
+                doc = _telemetry_kpis(runtime, refresh=query.get("refresh", ["0"])[0] == "1")
+            except Exception as e:
+                self._send_json({"state": "failed", "error": f"KPI computation failed: {e}"}, 500)
+                return
+            if path == "/api/telemetry/kpis" or doc.get("state") != "ok":
+                self._send_json(doc)
+            else:
+                from harvest_integrations.telemetry.kpi import export_csv, export_json
+                mission = str((doc.get("summary") or {}).get("mission_id") or "mission").replace(", ", "_")
+                if path.endswith(".json"):
+                    self._send_download(export_json(doc), "application/json; charset=utf-8",
+                                        f"harvest_mission_{mission}_kpis.json")
+                else:
+                    wide = query.get("format", ["long"])[0] == "wide"
+                    self._send_download(export_csv(doc, wide=wide), "text/csv; charset=utf-8",
+                                        f"harvest_mission_{mission}_kpis{'_wide' if wide else ''}.csv")
 
         elif path == "/health":
             self._send_json({"status": "ok", "config": str(CONFIG_FILE)})

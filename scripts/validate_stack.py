@@ -283,6 +283,43 @@ def check_telemetry() -> None:
         record("TractorTelemetry entity mirrored", SKIP, "Orion-LD not running")
 
 
+def check_mission_kpis() -> None:
+    """Mission KPIs / model validation: skipped when no mission data exists."""
+    try:
+        _, doc = http_json("GET", f"{HARVEST}/api/telemetry/kpis", timeout=120)
+    except Exception as exc:
+        record("Mission KPI endpoint", FAIL, str(exc))
+        return
+    state = (doc or {}).get("state")
+    if state == "inactive":
+        record("Mission KPI checks", SKIP, str(doc.get("error")))
+        return
+    if state != "ok":
+        record("Mission KPIs", FAIL, str(doc.get("error")))
+        return
+    kpis = doc.get("kpis") or {}
+    classes = set(doc.get("provenance_classes") or {})
+    bad = [k for k, v in kpis.items() if v.get("provenance") not in classes
+           or (v.get("value") is None) != (v.get("provenance") == "MISSING")]
+    s = doc.get("summary") or {}
+    record("Mission KPIs with provenance", FAIL if bad or not kpis else PASS,
+           f"unclassified/inconsistent: {bad}" if bad else
+           (f"mission {s.get('mission_id')} ({doc.get('mode')}): {s.get('energy_kwh')} kWh, "
+            f"dSOC {s.get('soc_delta_pct')} pts, model error {s.get('energy_error_pct')} %, "
+            f"{len(kpis)} KPIs"))
+    lims = {lim["id"] for lim in doc.get("limitations") or []}
+    missing = {"aws_not_implemented", "no_direct_control"} - lims
+    record("Mission limitations declared", FAIL if missing else PASS,
+           f"missing {sorted(missing)}" if missing else f"{len(lims)} limitation flags")
+    try:
+        with urllib.request.urlopen(f"{HARVEST}/api/telemetry/kpis.csv", timeout=60) as resp:
+            head = resp.read().decode().splitlines()[0]
+        ok = head.startswith("mission_id,tractor_id,key,") and "provenance" in head
+        record("Mission KPI CSV export", PASS if ok else FAIL, head[:80])
+    except Exception as exc:
+        record("Mission KPI CSV export", FAIL, str(exc))
+
+
 def check_ros2() -> None:
     probe = subprocess.run(
         ["docker", "ps", "--filter", "name=ros2-bridge", "--format", "{{.Names}}"],
@@ -384,6 +421,7 @@ def main() -> int:
     check_diagnostics()
     check_fiware()
     check_telemetry()
+    check_mission_kpis()
     check_ros2()
     check_isaac()
 

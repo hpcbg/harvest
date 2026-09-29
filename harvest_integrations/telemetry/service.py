@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from harvest_control.interface import TractorState
 
 from .model import (
+    FIELD_PROVENANCE,
     SOURCE_CSV_REPLAY,
     Subscription,
     TelemetrySource,
@@ -218,7 +219,8 @@ class TelemetryService:
                     "drive_active", "speed_kmh")
                 if key in state.observed_at}
             if self.nominal_capacity_kwh and state.soc_pct is not None:
-                doc["energy_kwh_nominal"] = round(
+                # NOT a measurement: SOC x the capacity configured in config.yaml.
+                doc["estimated_remaining_energy_kwh"] = round(
                     state.soc_pct / 100.0 * self.nominal_capacity_kwh, 3)
             tractors.append(doc)
         return {
@@ -233,8 +235,9 @@ class TelemetryService:
                 "charging state: not present in this telemetry",
                 "battery_power_kw is derived (voltage x current); "
                 "discharged_energy_kwh accumulates the per-session counter across resets",
-                "energy_kwh_nominal is SOC x the configured nominal capacity, not a measurement",
+                "estimated_remaining_energy_kwh is SOC x the CONFIGURED capacity, not a measurement",
             ],
+            "provenance": FIELD_PROVENANCE,
             "error": self._error,
             "started_at": self._started_at,
         }
