@@ -247,6 +247,101 @@ Task creation, assignment, progression and completion stay in HARVEST: the live 
 service calls HARVEST's own scheduler, and **Isaac contains no second scheduler**. The
 vehicle is a **functional ZETRABOT-style proxy**, not an exact CAD model; a real
 ZETRABOT USD can replace it by editing `robot_models.yaml` only.
+
+The two animations below are **real Isaac Sim 6.0.1 recordings**, not the `isaac-demo`
+stand-in. The frames were saved on the simulation host from the spectator camera that
+the application selects automatically — the actual Isaac Sim scene served through
+**WebRTC**. Whichever farm is running, the division of responsibilities is the same:
+
+- **HARVEST remains authoritative** for scheduling and for energy decisions (SOC,
+  charger allocation, charging power).
+- **Isaac Sim contains no independent task scheduler.** It is told a location, a work
+  radius and a duration, and reports back where the tractor actually is.
+- **ROS 2 carries the goals and the physical telemetry**: `/harvest/sim/command` out,
+  `/harvest/sim/telemetry` back.
+- **The tractor is a functional ZETRABOT-style proxy**, not an exact CAD model.
+- **WebRTC streaming is supported**: the same fixed view opens in the NVIDIA Isaac Sim
+  WebRTC Streaming Client.
+
+Both animations come from one 105-second session on the **fast demonstration profile**
+([`examples/isaac_fast_demo.yaml`](examples/isaac_fast_demo.yaml)): the same three
+tractors and two chargers on a compact farm with six short jobs, so the whole loop fits
+in a minute. It is an optional overlay selected with `HARVEST_CONFIG_PROFILE`; the
+committed scenario and every KPI quoted in this README are unaffected by it. Nothing
+about *how* the loop runs is different: HARVEST's scheduler assigns the tasks, the
+tractors drive under PhysX at the normal 4 m/s, and the work lasts one second per task
+minute.
+
+**Task lifecycle.** At 09:00 farm time HARVEST assigns one task to each tractor. The
+three zones turn amber, a beam marks each, and the flag on each pole takes the colour
+of its tractor's cab roof (blue `tractor_1`, magenta `tractor_2`, yellow `tractor_3`).
+The tractors cover their 20 m in about four seconds. When Isaac Sim reports an arrival,
+HARVEST moves that task to *active* and the zone turns bright green; the work lasts
+5, 7 and 9 s. Each completed zone turns dark green, and in the same scheduling cycle
+HARVEST assigns the freed tractor its next task. A zone changes colour a second or two
+after the tractor acts, because the colour is HARVEST's task state arriving back over
+ROS 2, not something Isaac Sim decides.
+
+[![Animated recording of three tractor proxies in Isaac Sim: grey pending work zones turn amber as HARVEST assigns them, the tractors drive to them, the zones turn bright green while being worked and dark green when completed, and each tractor then drives on to a newly assigned amber zone](./images/isaac-sim-task-cycle.gif)](./images/isaac-sim-task-cycle.gif)
+
+*Figure 10 — Real HARVEST task execution in NVIDIA Isaac Sim (real time, 22 s). HARVEST assigns agricultural tasks, tractor proxies physically travel to the corresponding work zones, task state changes from assigned/travelling to active and completed, and subsequent assignments are issued through the same scheduler. ROS 2 carries goals and physical telemetry between HARVEST and Isaac Sim.*
+
+Task-state colours, as authored in `scene.py` (the render shades them slightly):
+
+| Pending | Assigned | Active / working | Completed | Deferred | Missed |
+|---|---|---|---|---|---|
+| grey `#8C949E` | amber `#FA9E0D`, with beam | green `#26F24D`, with beam | dark green `#1A4D24` | orange `#D9731A` | red `#E61F1F` |
+
+The small beacon on each cab shows what the tractor is doing: amber travelling, green
+working, blue charging, grey idle.
+
+**Charging.** With all six tasks completed, a `request_charge` for `tractor_3` (30 %
+SOC) is sent through the normal fleet API. HARVEST allocates `charger_1` and starts
+charging in its energy model at once, so the charger head turns green and the
+tractor's beacon blue *before* the tractor moves: that allocation is a HARVEST
+decision, not a simulator event. The tractor then drives about 35 m, slows to line up,
+and rolls onto the pad. Isaac Sim measures the docking (stopped within 1.5 m of the pad
+centre) and reports it back; SOC and the 6.6 kW charging power are HARVEST's own.
+
+[![Animated recording of the charging area in Isaac Sim: the charger head turns green and the beacon of the tractor with the yellow roof turns blue, the tractor drives across the field from a completed work zone, slows down and rolls onto the yellow charging pad, while the two other tractors stay parked at their completed zones](./images/isaac-sim-charging.gif)](./images/isaac-sim-charging.gif)
+
+*Figure 11 — Charging in Isaac Sim (1.5× speed, 19 s of simulation; cropped from the same camera view): HARVEST allocates `charger_1` to `tractor_3`, and the tractor physically drives to the pad and docks.*
+
+To reproduce the session (the 1080p source of both animations, at real speed and
+uncropped, is [docs/media/isaac-fast-demo.mp4](docs/media/isaac-fast-demo.mp4)):
+
+```bash
+HARVEST_ISAAC_VIEW_MODE=webrtc ./scripts/run_isaac_sim.sh          # wait for READY
+HARVEST_CONFIG_PROFILE=examples/isaac_fast_demo.yaml \
+HARVEST_ISAAC_AUTOSTART=0 ./run_harvest_dashboard.sh isaac         # tasks open at 09:00 farm time
+curl -X POST localhost:8765/api/fleet/command \
+  -d '{"commands":[{"type":"request_charge","target_id":"tractor_3"}]}'
+```
+
+**The normal farm.** The same camera on the regular scenario, a 20-task day (here on a
+300 × 200 m local map; the committed farm is 800 × 500 m). All six task states are
+visible at once: one tractor is working and two are travelling among completed zones,
+with four tasks still pending, one deferred and one missed, and the two charging pads
+in the corner. At this scale a task takes two to three minutes to reach and work,
+which is why the animations use the fast profile.
+
+[![Isaac Sim spectator view of the whole farm: about twenty round task zones in grey, amber, bright green, dark green, orange and red spread over a green field with crop rows, three small white tractor proxies among them and two yellow charging pads in the lower left corner](./images/isaac-sim-farm-overview.jpg)](./images/isaac-sim-farm-overview.jpg)
+
+*Figure 12 — The digital twin of a full farm day in Isaac Sim: three HARVEST-controlled tractor proxies, two charging stations and twenty task work zones in all six task states.*
+
+**What the WebRTC client shows.** The scene is watched with the **NVIDIA Isaac Sim
+WebRTC Streaming Client**, connected to the URL the launcher prints
+(`http://127.0.0.1:49100` by default; signalling on `49100/TCP`, media on
+`47998/UDP`). A browser cannot display this stream. Figure 13 is the complete
+application frame the livestream carries, saved on the simulation host during the
+session above: the viewport already on `HarvestFieldCamera`, which the application
+selects by itself, and the Stage panel listing the `tractor_*`, `charger_*` and `Tasks`
+prims.
+
+[![Full NVIDIA Isaac Sim application frame as carried by the WebRTC livestream: menu bar, an RTX real-time viewport with HarvestFieldCamera selected showing three tractor proxies arriving at amber work zones, and the Stage panel listing Field, CropRows, charger_1, charger_2, tractor_1, tractor_2, tractor_3, Tasks and HarvestFieldCamera](./images/isaac-sim-webrtc-stream.png)](./images/isaac-sim-webrtc-stream.png)
+
+*Figure 13 — The Isaac Sim application frame served over WebRTC, with the spectator camera selected automatically and the HARVEST entities in the Stage tree.*
+
 Details: [harvest_integrations/simulators/isaac/README.md](harvest_integrations/simulators/isaac/README.md).
 
 ### Real ZETRABOT telemetry
@@ -300,7 +395,7 @@ once.
 
 [![ROI investment analysis table listing electric fleet, farm PV and roof PV per scenario with net CAPEX, annual benefit, payback, NPV, IRR and ROI, followed by combined-portfolio KPI cards](./images/roi-investments.png)](./images/roi-investments.png)
 
-*Figure 10 — Investment analysis per source scenario and the combined HARVEST portfolio (shipped demonstration assumptions, not quotations).*
+*Figure 14 — Investment analysis per source scenario and the combined HARVEST portfolio (shipped demonstration assumptions, not quotations).*
 
 The cumulative and discounted cash-flow curves show when each investment crosses zero.
 The tornado chart shows which assumptions move the portfolio NPV most under ±20 %;
@@ -308,7 +403,7 @@ here diesel price, tractor CAPEX and discount rate dominate.
 
 [![Cumulative and discounted cash-flow charts for electric fleet, fixed farm PV and the portfolio over ten years, and a one-way sensitivity tornado chart of portfolio NPV for plus and minus 20 percent changes in each assumption](./images/roi-cashflow-sensitivity.png)](./images/roi-cashflow-sensitivity.png)
 
-*Figure 11 — Cash flows over the 10-year horizon and one-way NPV sensitivity (±20 %).*
+*Figure 15 — Cash flows over the 10-year horizon and one-way NPV sensitivity (±20 %).*
 
 Details: [docs/roi.md](docs/roi.md).
 
@@ -321,7 +416,7 @@ charger power, battery capacity, task count and seed, pick the scenarios, and ru
 real simulator. Results: KPI summary cards (lowest cost, best PV self-use, most tasks
 done, lowest peak, best grid efficiency), a scenario comparison table, cost and
 completion charts, and a per-scenario **task status** table (phase, progress, tractor,
-delay reason) — see Figure 1 and Figure 15.
+delay reason) — see Figure 1 and Figure 19.
 
 **ROI & Investment** — built strictly on the latest successful Operations run: fleet,
 PV, tasks, seed and scenarios carry over read-only, and ROI is disabled or marked stale
@@ -337,7 +432,7 @@ charts compare annual cost, grid energy, tasks and PV use per scenario.
 
 [![ROI & Investment view: period and financial-assumption sidebar, operational-basis card linked to the Operations run, long-term annualised comparison table and charts of annual cost, grid energy, tasks and PV per scenario](./images/roi-overview.png)](./images/roi-overview.png)
 
-*Figure 12 — ROI & Investment view: operational basis, one-year long-term comparison and annual charts per scenario.*
+*Figure 16 — ROI & Investment view: operational basis, one-year long-term comparison and annual charts per scenario.*
 
 **Diagnostics** — live view of the integration stack, refreshed every 3 s:
 
@@ -359,7 +454,7 @@ executing, and the replayed ZETRABOT's SOC, power and energy.
 
 [![Diagnostics service health grid: HARVEST API, fleet backend, Modbus and OPC-UA adapters, Orion-LD, MongoDB, FIWARE sync, ROS 2 bridge, farm tasks and real telemetry all healthy; Isaac Sim simulated, with live fact lines](./images/diagnostics-service-health.png)](./images/diagnostics-service-health.png)
 
-*Figure 13 — Diagnostics — service health of the full integration stack with live facts.*
+*Figure 17 — Diagnostics — service health of the full integration stack with live facts.*
 
 The Devices table is read through the common DeviceIO abstraction, with one row per
 field endpoint:
@@ -370,7 +465,7 @@ field endpoint:
 
 [![Diagnostics devices table: grid, chargers and farm loads over Modbus, three tractors over OPC-UA and the replayed ZETRABOT over csv-replay, each online with endpoint, latest values and age](./images/diagnostics-devices.png)](./images/diagnostics-devices.png)
 
-*Figure 14 — Diagnostics — DeviceIO devices: protocol, endpoint, status, latest values and age.*
+*Figure 18 — Diagnostics — DeviceIO devices: protocol, endpoint, status, latest values and age.*
 
 ## Simulation capabilities
 
@@ -408,7 +503,7 @@ and the delay reason.
 
 [![Task status table for the full_smart scenario: counts of delayed, interrupted and done tasks, and per-task priority, phase badge, progress bar, assigned tractor, time window, duration and delay reason](./images/task-status.png)](./images/task-status.png)
 
-*Figure 15 — Task status by scenario: lifecycle phases, progress, assignment and delay reasons.*
+*Figure 19 — Task status by scenario: lifecycle phases, progress, assignment and delay reasons.*
 
 **Operational KPIs** per scenario: total energy cost, peak grid draw, task
 completion %, PV self-use share and PV utilisation, grid kWh per completed task,
@@ -428,7 +523,7 @@ committed 21-task configuration.
 
 [![Scenario KPI comparison bar charts for all nine scenarios: grid energy, PV energy used, PV self-use share, total energy cost, cost per completed task, peak grid draw, task completion counts and rate, and tractor downtime](./images/kpi_comparison.png)](./images/kpi_comparison.png)
 
-*Figure 16 — Scenario KPI comparison across all nine strategies (30-task run).*
+*Figure 20 — Scenario KPI comparison across all nine strategies (30-task run).*
 
 Details: [docs/simulation-model.md](docs/simulation-model.md).
 
@@ -449,7 +544,7 @@ red MISSING), its formula and any quality flags. Examples:
 
 [![Real ZETRABOT mission KPI panel: mission, energy, model-validation and thermal/operational KPI cards, each with a provenance badge, formula and quality flags, plus export buttons and an operating-state share bar](./images/diagnostics-mission-kpis.png)](./images/diagnostics-mission-kpis.png)
 
-*Figure 17 — Mission 63 KPIs with provenance, formulas and quality flags, and JSON / CSV export.*
+*Figure 21 — Mission 63 KPIs with provenance, formulas and quality flags, and JSON / CSV export.*
 
 **Provenance** keeps field measurements, derived figures and assumptions apart:
 
@@ -478,7 +573,7 @@ bands, with *ok / info / warning / limitation* levels, and no generated prose.
 
 [![Real vs HARVEST model table for mission 63 with real and model values, provenance badges, differences and colour-coded errors, followed by the rule-based validation summary with ok, info, warning and limitation findings](./images/diagnostics-real-vs-model.png)](./images/diagnostics-real-vs-model.png)
 
-*Figure 18 — Real vs HARVEST model comparison and rule-based validation summary for mission 63.*
+*Figure 22 — Real vs HARVEST model comparison and rule-based validation summary for mission 63.*
 
 **Main findings:** the measured energy with the configured capacity reproduces the SOC
 drop within 1.5 points, so capacity is not the problem; the configured PTO power

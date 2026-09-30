@@ -197,6 +197,15 @@ def main() -> int:                                     # noqa: PLR0915, PLR0912
         attached, world_problems = world.attach()
         for problem in world_problems:
             print(f"{_LOG} WARNING: {problem}", file=sys.stderr, flush=True)
+        # The new stage took the viewport back to Kit's default perspective
+        # camera; point it at the spectator camera again, every time.
+        selected, camera_detail = streaming.select_spectator_camera()
+        if selected:
+            print(f"{_LOG} {camera_detail}, eye {world.camera.get('eye')} "
+                  f"-> {world.camera.get('target')}", flush=True)
+        else:
+            print(f"{_LOG} WARNING: spectator camera not selected: "
+                  f"{camera_detail}", file=sys.stderr, flush=True)
         print(f"{_LOG} scene applied: {len(world.robots)} tractors "
               f"({attached} driveable), {len(world.chargers)} chargers, "
               f"{len(world.tasks)} task markers, fingerprint {fingerprint}",

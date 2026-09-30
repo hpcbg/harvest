@@ -84,7 +84,11 @@ models:
       drive_damping: 100000.0
       drive_max_force: 100000.0
     colors:
-      body:  [0.16, 0.42, 0.20]      # a farm-machine green
+      # Off-white, and deliberately not a farm-machine green: on a correctly
+      # exposed green field a green vehicle is camouflage, and green is also
+      # the colour of a task being worked.  A neutral light body is readable
+      # against the field and against every task-state colour.
+      body:  [0.90, 0.90, 0.86]
       cab:   [0.22, 0.24, 0.26]
       wheel: [0.09, 0.09, 0.10]
 

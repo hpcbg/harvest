@@ -52,7 +52,8 @@ PRIMARY_STREAM_SETTING = "/exts/omni.kit.livestream.app/primaryStream"
 
 #: The camera the stream opens on: a framed view of the whole demonstration
 #: field, NOT wherever a fresh stage's default viewport happens to point (which
-#: is at the origin, looking away from the field).
+#: is at the origin, looking away from the field).  ``scene.py`` authors it and
+#: ``select_spectator_camera`` points the viewport at it.
 SPECTATOR_CAMERA = "/World/HarvestFieldCamera"
 
 #: WHERE KIT ACTUALLY LISTENS.  Not configurable, and not a default we chose:
@@ -292,8 +293,33 @@ def enable(simulation_app: Any, config: StreamingConfig) -> Dict[str, Any]:
     return report
 
 
+def select_spectator_camera(camera_path: str = SPECTATOR_CAMERA
+                            ) -> Tuple[bool, str]:
+    """Point the active viewport -- and so the stream -- at the spectator camera.
+
+    Called after EVERY stage build, because ``create_new_stage`` hands the
+    viewport back to Kit's default perspective camera.  Until this existed the
+    camera was authored and never selected: the stream opened on the default
+    view of the origin, and seeing the farm at all meant flying there by hand.
+
+    Returns ``(selected, detail)`` and never raises.  The camera is how the
+    demonstration is watched, not part of it, so a run without a viewport
+    (``HARVEST_ISAAC_VIEW_MODE=none`` on some installs) must carry on and say so.
+    """
+    try:
+        from omni.kit.viewport.utility import get_active_viewport   # noqa: PLC0415
+
+        viewport = get_active_viewport()
+        if viewport is None:
+            return False, "no active viewport to point at the spectator camera"
+        viewport.camera_path = camera_path
+        return True, f"viewport camera {camera_path}"
+    except Exception as exc:                                 # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 __all__ = [
     "REQUIRED_EXTENSIONS", "PRIMARY_STREAM_SETTING", "SPECTATOR_CAMERA",
     "KIT_BIND_ADDRESS", "StreamingConfig", "port_is_free",
-    "launch_config", "enable",
+    "launch_config", "enable", "select_spectator_camera",
 ]

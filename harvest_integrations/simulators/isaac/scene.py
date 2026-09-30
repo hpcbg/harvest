@@ -64,6 +64,34 @@ TASK_COLORS: Dict[str, Any] = {
     "missed":    (0.90, 0.12, 0.12),      # red — the window closed
 }
 
+#: LIGHTING, measured against the rendered frame rather than chosen by feel.
+#: Every surface here is a plain ``displayColor`` with no exposure control of
+#: its own, so these two numbers ARE the exposure.  The first values (1200 sky,
+#: 2600 sun) blew the scene out: the field (authored 0.28, 0.42, 0.20) rendered
+#: at (0.88, 0.92, 0.83), a "pending" grey zone rendered white, and the task
+#: colours below were barely distinguishable pastels.  At 250 / 600 the field
+#: renders at (0.54, 0.65, 0.45) and every state in TASK_COLORS reads as itself;
+#: below roughly 200 / 450 the scene starts to look like dusk.  The sky fills the
+#: shadows; the sun is there to cast them, not to light the scene.
+SKY_INTENSITY = 250.0
+SUN_INTENSITY = 600.0
+
+#: THE SPECTATOR CAMERA.  A fixed view fitted to the scene, so the same
+#: farm always produces the same picture -- on a desktop window and over WebRTC
+#: alike.  24 mm on a 16:9 gate; the elevation is steep enough that a task zone
+#: reads as a disc and a roof stripe is visible, and shallow enough that a beam
+#: still reads as a beam.
+CAMERA_FOCAL_MM = 24.0
+CAMERA_APERTURE_MM = (20.955, 20.955 * 9.0 / 16.0)
+CAMERA_ELEVATION_DEG = 48.0
+#: Turned slightly off the field's short axis, so the view is not a flat map.
+CAMERA_YAW_DEG = 12.0
+#: Breathing room around the outermost entity, as a fraction of the frame.
+CAMERA_MARGIN = 1.14
+#: How far above the ground the framing must still contain a vehicle or
+#: charger, in metres.  Task markers use the beam height instead.
+CAMERA_ENTITY_HEIGHT_M = 3.0
+
 #: Identity colours, assigned to tractors in sorted id order.  A task's flag is
 #: painted in its assigned tractor's colour, and the tractor carries the same
 #: colour as a roof stripe, so "which tractor is going to which task" is one
@@ -103,6 +131,8 @@ class HarvestWorld:
         self.tasks: Dict[str, Dict[str, Any]] = {}
         self._task_drawn: Dict[str, Any] = {}
         self.accents: Dict[str, Any] = {}
+        #: Where the spectator camera was placed for this stage (reported).
+        self.camera: Dict[str, Any] = {}
         #: Task ids HARVEST sent that have no marker yet -- reported, never
         #: silently skipped, because a missing marker is a lie about the field.
         self.unknown_tasks: List[str] = []
@@ -140,11 +170,11 @@ class HarvestWorld:
                           + [{"pose": t.get("location")}
                              for t in (tasks or {}).values()
                              if isinstance(t, dict) and t.get("location")])
-        DomeLight("/World/Sky").set_intensities(1200)
+        DomeLight("/World/Sky").set_intensities(SKY_INTENSITY)
         # A sun as well as the dome: without a directional light nothing casts a
         # shadow and the vehicles look pasted onto the field rather than on it.
         sun = DistantLight("/World/Sun")
-        sun.set_intensities(2600)
+        sun.set_intensities(SUN_INTENSITY)
         sun.set_world_poses(orientations=[_quat_from_euler(-42.0, 0.0, 155.0)])
 
         for spec in chargers:
@@ -400,31 +430,40 @@ class HarvestWorld:
     def _build_camera(self, stage, tractors: List[Dict[str, Any]],
                       chargers: List[Dict[str, Any]],
                       tasks: Optional[List[Dict[str, Any]]] = None) -> None:
-        """A fixed spectator camera framing the whole demonstration.
+        """The fixed spectator camera, fitted to the whole demonstration.
 
-        The stream opens on this camera because a fresh stage's default viewport
-        looks at the origin, and the origin is 40 m from anything interesting.
+        The viewport is pointed at this camera by
+        ``streaming.select_spectator_camera`` after every build, because a fresh
+        stage's default perspective camera looks at the origin and the origin is
+        40 m from anything interesting.
+
+        FITTED, not scaled from the spread: the earlier version backed off by a
+        multiple of the largest extent, which on a 210 x 110 m farm left the
+        work in the middle third of the frame and a tractor five pixels long.
         """
         from pxr import Gf, UsdGeom                          # noqa: PLC0415
 
-        # The tasks are framed too: on an 800 m farm a camera framed on the
-        # vehicles alone would leave most of the day's work off screen.
-        points = [_xy(e.get("home") or e.get("pose")) for e in tractors + chargers]
-        points += [_xy(t.get("location")) for t in (tasks or [])
-                   if t.get("location")]
-        if not points:
-            points = [(50.0, 50.0)]
-        cx = sum(p[0] for p in points) / len(points)
-        cy = sum(p[1] for p in points) / len(points)
-        spread = max(20.0, max(
-            max(p[0] for p in points) - min(p[0] for p in points),
-            max(p[1] for p in points) - min(p[1] for p in points)))
+        # The tasks are framed too: a camera framed on the vehicles alone would
+        # leave most of the day's work off screen.
+        points: List[Tuple[float, float, float]] = []
+        for entity in tractors + chargers:
+            x, y = _xy(entity.get("home") or entity.get("pose"))
+            points += [(x, y, 0.0), (x, y, CAMERA_ENTITY_HEIGHT_M)]
+        for task in tasks or []:
+            if task.get("location"):
+                x, y = _xy(task.get("location"))
+                points += [(x, y, 0.0), (x, y, TASK_BEAM_SIZE[2])]
+        eye, target = spectator_view(points)
+        self.camera = {"path": streaming.SPECTATOR_CAMERA,
+                       "eye": [round(v, 2) for v in eye],
+                       "target": [round(v, 2) for v in target]}
 
         camera = UsdGeom.Camera.Define(stage, streaming.SPECTATOR_CAMERA)
-        camera.CreateFocalLengthAttr(24.0)
-        camera.CreateClippingRangeAttr(Gf.Vec2f(0.1, 2000.0))
-        eye = Gf.Vec3d(cx - spread * 0.9, cy - spread * 1.5, spread * 0.85)
-        look = Gf.Matrix4d().SetLookAt(eye, Gf.Vec3d(cx, cy, 1.0),
+        camera.CreateFocalLengthAttr(CAMERA_FOCAL_MM)
+        camera.CreateHorizontalApertureAttr(CAMERA_APERTURE_MM[0])
+        camera.CreateVerticalApertureAttr(CAMERA_APERTURE_MM[1])
+        camera.CreateClippingRangeAttr(Gf.Vec2f(0.1, 10000.0))
+        look = Gf.Matrix4d().SetLookAt(Gf.Vec3d(*eye), Gf.Vec3d(*target),
                                       Gf.Vec3d(0.0, 0.0, 1.0))
         # SetLookAt builds a WORLD -> camera matrix; a prim's transform is the
         # other direction.
@@ -471,6 +510,75 @@ class HarvestWorld:
 # --------------------------------------------------------------------------- #
 #  small helpers
 # --------------------------------------------------------------------------- #
+def frame_points(points: List[Tuple[float, float, float]], *,
+                 azimuth_deg: float, elevation_deg: float,
+                 tan_half_h: float, tan_half_v: float,
+                 margin: float = 1.0
+                 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """Eye and ground target of the closest camera that sees every point.
+
+    ``azimuth_deg`` is the compass direction the camera LOOKS in (from +X,
+    counter-clockwise), ``elevation_deg`` how far below the horizon.  Pure
+    arithmetic -- no USD -- so the framing is tested without Isaac Sim.
+    """
+    az, el = math.radians(azimuth_deg), math.radians(elevation_deg)
+    forward = (math.cos(el) * math.cos(az), math.cos(el) * math.sin(az),
+               -math.sin(el))
+    right = (math.sin(az), -math.cos(az), 0.0)
+    up = (right[1] * forward[2] - right[2] * forward[1],
+          right[2] * forward[0] - right[0] * forward[2],
+          right[0] * forward[1] - right[1] * forward[0])
+    ground = (math.cos(az), math.sin(az))
+
+    def dot(a, b):
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+    cx = (min(p[0] for p in points) + max(p[0] for p in points)) / 2.0
+    cy = (min(p[1] for p in points) + max(p[1] for p in points)) / 2.0
+    distance = 1.0
+    # Fit the distance, then slide the target until the picture is centred;
+    # perspective makes the two depend on each other, and a few rounds settle it.
+    for _ in range(8):
+        rel = [(p[0] - cx, p[1] - cy, p[2]) for p in points]
+        xs = [dot(r, right) for r in rel]
+        ys = [dot(r, up) for r in rel]
+        zs = [dot(r, forward) for r in rel]
+        distance = max(1.0, max(
+            max(abs(x) * margin / tan_half_h, abs(y) * margin / tan_half_v) - z
+            for x, y, z in zip(xs, ys, zs)))
+        nx = [x / (distance + z) for x, z in zip(xs, zs)]
+        ny = [y / (distance + z) for y, z in zip(ys, zs)]
+        shift_right = (max(nx) + min(nx)) / 2.0 * distance
+        shift_ground = ((max(ny) + min(ny)) / 2.0 * distance
+                        / max(1e-6, math.sin(el)))
+        cx += right[0] * shift_right + ground[0] * shift_ground
+        cy += right[1] * shift_right + ground[1] * shift_ground
+    eye = (cx - forward[0] * distance, cy - forward[1] * distance,
+           -forward[2] * distance)
+    return eye, (cx, cy, 0.0)
+
+
+def spectator_view(points: List[Tuple[float, float, float]]
+                   ) -> Tuple[Tuple[float, float, float],
+                              Tuple[float, float, float]]:
+    """The spectator camera's eye and target for a set of scene points.
+
+    Looks across the SHORT axis of the scene, so the long axis fills the width
+    of a 16:9 frame, turned by ``CAMERA_YAW_DEG`` to keep some depth.
+    """
+    if not points:
+        points = [(50.0, 50.0, 0.0)]
+    span_x = max(p[0] for p in points) - min(p[0] for p in points)
+    span_y = max(p[1] for p in points) - min(p[1] for p in points)
+    azimuth = (90.0 if span_x >= span_y else 0.0) - CAMERA_YAW_DEG
+    tan_half_h = CAMERA_APERTURE_MM[0] / 2.0 / CAMERA_FOCAL_MM
+    tan_half_v = CAMERA_APERTURE_MM[1] / 2.0 / CAMERA_FOCAL_MM
+    return frame_points(points, azimuth_deg=azimuth,
+                        elevation_deg=CAMERA_ELEVATION_DEG,
+                        tan_half_h=tan_half_h, tan_half_v=tan_half_v,
+                        margin=CAMERA_MARGIN)
+
+
 def _xy(value: Any) -> Tuple[float, float]:
     if not value:
         return (50.0, 50.0)
@@ -490,4 +598,4 @@ def _quat_from_euler(pitch_deg: float, roll_deg: float, yaw_deg: float):
             cr * sp * cy + sr * cp * sy, cr * cp * sy - sr * sp * cy]
 
 
-__all__ = ["HarvestWorld"]
+__all__ = ["HarvestWorld", "frame_points", "spectator_view"]

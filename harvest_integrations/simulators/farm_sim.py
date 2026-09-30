@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 
 from .farm_state import FarmState
@@ -32,6 +33,12 @@ def load_state(config_path: str | None) -> FarmState:
     import yaml
     with open(config_path, "r", encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh) or {}
+    if os.environ.get("HARVEST_CONFIG_PROFILE", "").strip():
+        # The same optional profile the HARVEST API applies, so the simulated
+        # devices and the decision layer describe one farm.  Imported only when
+        # a profile is named: without one this process never loads main.py.
+        from main import apply_config_profile                # noqa: PLC0415
+        cfg = apply_config_profile(cfg, os.path.dirname(os.path.abspath(config_path)))
     return FarmState.from_config(cfg)
 
 

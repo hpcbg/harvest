@@ -227,6 +227,23 @@ pose / arrival / progress / completion ─► ROS 2 ─► HARVEST ─► FIWARE
 
 ### What you see on the stream
 
+**The view is fixed and automatic.** `scene.py` authors a spectator camera
+(`/World/HarvestFieldCamera`) fitted to the tractors, the chargers and every task
+marker, and `harvest_isaac.py` points the viewport at it after every stage build
+(`streaming.select_spectator_camera`). The desktop window and the WebRTC stream
+therefore open on the same framed view of the whole farm, and the same farm always
+gives the same picture; nothing has to be positioned by hand. A client can still
+navigate away, and the next stage build brings the view back. The framing is pure
+arithmetic (`scene.frame_points`, covered by `tests/test_isaac_scene.py`): it looks
+across the short axis of the scene at 48° below the horizon and stands as close as
+the outermost marker allows.
+
+**The exposure is two numbers.** Every surface is a plain display colour, so
+`SKY_INTENSITY` and `SUN_INTENSITY` in `scene.py` are the scene's exposure. They
+were measured against the rendered frame: at the original 1200 / 2600 the field
+rendered near-white and the task colours were indistinguishable pastels; at
+250 / 600 each state in the table below reads as itself.
+
 Each task is a **work zone** (a disc of exactly the work radius HARVEST sent), a
 **pole and sign**, an **assignment flag** and, for the task being travelled to
 or worked, a **tall beam** visible across the field.  Colour carries the state:
@@ -244,8 +261,8 @@ Only `assigned` and `active` tasks get the beam, so an 800 m field with twenty
 markers still answers "where is the action?" at a glance.
 
 **Which tractor is going to which task** needs no caption: every tractor carries
-an identity colour as a roof stripe, and its task's flag is painted the same
-colour.  **What a tractor is busy with** is its beacon: amber travelling, green
+an identity colour as a roof stripe (blue, magenta, yellow, … in tractor-id
+order) on an off-white body, and its task's flag is painted the same colour.  **What a tractor is busy with** is its beacon: amber travelling, green
 working, blue charging, grey idle.
 
 `integrations.tasks` in `config.yaml` tunes this: `work_radius_m` (6),
@@ -292,6 +309,42 @@ It also states which layer is executing: `physical` when Isaac is reporting
 progress, `clock` when HARVEST is advancing the work itself because no simulator
 is connected.  A clock-driven task must never read as a physically executed one.
 
+## The fast documentation demo
+
+On the normal farm one task takes two to three minutes to reach and work, which is
+right for the scenario and useless for a recording or a five-minute review.
+[`examples/isaac_fast_demo.yaml`](../../../examples/isaac_fast_demo.yaml) is a
+**profile** for that: the same three tractors and two chargers on a compact farm,
+with six short jobs laid out along three straight tracks.
+
+```bash
+HARVEST_ISAAC_VIEW_MODE=webrtc ./scripts/run_isaac_sim.sh          # wait for READY
+HARVEST_CONFIG_PROFILE=examples/isaac_fast_demo.yaml \
+HARVEST_ISAAC_AUTOSTART=0 ./run_harvest_dashboard.sh isaac
+```
+
+Isaac goes first so that it is already listening: the work opens at 09:00 farm time,
+one minute after the stack starts, and a simulator that connects later finds the
+tasks already advanced by HARVEST's clock. Measured on this machine, from the 09:00
+assignment: arrival after 4 s, all six tasks completed (`completed_by: physical`)
+after 26 s; then a `request_charge` for `tractor_3` docks it on `charger_1` about
+20 s later. The README animations are cut from exactly that session
+([docs/media/isaac-fast-demo.mp4](../../../docs/media/isaac-fast-demo.mp4)).
+
+What the profile changes is the farm, not the machinery. `HARVEST_CONFIG_PROFILE`
+names one YAML file that is deep-merged over `config.yaml` (after
+`config.local.yaml`); unset, nothing changes, and `config.yaml` — the scenario the
+KPIs are quoted from — is never edited. The tasks are a static list instead of the
+generated day, but `main.Scheduler` still assigns them; driving speed, the dock
+radius and the one-second-per-task-minute work timer are the defaults.
+
+The layout is tracks converging on the chargers for a measured reason. A tractor is
+built facing the charging area, and the skid-steer proxy is only fast when it is
+pointed at its target (see the notes at the end of this file): a first version with
+parallel rows left the outer tractor 17° off its row, 25 s late, and every tractor
+then drew a task in somebody else's row. `tests/test_config_profile.py` checks that
+every task lies on its tractor's track and that the scheduler keeps it there.
+
 ## The initial world
 
 Deliberately simple, and built from HARVEST's own `config.yaml` (via
@@ -302,7 +355,7 @@ clearly separated), **two charging stations** (`charger_1`, `charger_2` — a
 bright pad, a post, and a head that turns green while the station is delivering
 power), **HARVEST's scheduled tasks** as work zones with poles and signs (see
 above), sky and sun lighting, and a fixed spectator camera framing the tractors,
-the chargers and the work. Deliberately absent: buildings, terrain, obstacles, crops
+the chargers and the work, selected in the viewport automatically. Deliberately absent: buildings, terrain, obstacles, crops
 as geometry, vehicle cameras, and perception of any kind.
 
 ## The demonstrator
@@ -376,9 +429,11 @@ acknowledgement matches.
 
 Tests: `tests/test_isaac_contract.py` (wire contract + kinematics),
 `tests/test_isaac_robots.py` (registry, steering arithmetic, streaming
-configuration, Diagnostics facts), `tests/test_live_tasks.py` (task assignment
+configuration, Diagnostics facts), `tests/test_isaac_scene.py` (spectator-camera
+framing, task-state colours), `tests/test_config_profile.py` (the fast demo
+profile), `tests/test_live_tasks.py` (task assignment
 through the fleet interface, physical execution, and the rule that a simulator
-report is evidence and never instruction). Both run without Isaac, a GPU or ROS.
+report is evidence and never instruction). All run without Isaac, a GPU or ROS.
 Anything that needs PhysX is covered by `--self-test-drive`, which measures
 actual displacement rather than asserting that a command was sent.
 
@@ -424,6 +479,16 @@ Then three more, from making the tractors actually *arrive* somewhere:
   "it has stopped" needs several consecutive frames (`_ARRIVAL_FRAMES`), not one
   low reading — otherwise a tractor starts "working" while driving through the
   zone.  Judge progress from the *position*, not from the speed.
+
+* **Turning under way is a crawl, so lay work out in straight lines.** Pointed
+  within about 6° of its target the proxy covers 20 m in 4 s; 17° off, it holds
+  0.3-0.8 m/s while the heading closes at roughly a degree a second, because four
+  fixed wheels scrub sideways. That, not the 4 m/s cruise, is what sets how long a
+  leg takes on the normal farm.
+* **A charger's post is in the way from the north.** The post stands on the +y side
+  of the pad and is a collider; a tractor arriving from that side can stop against
+  it, 3.5 m from the pad centre, and never count as docked. Approaches from the
+  south, east or west are clear.
 
 The regression test for all of this is `--self-test-drive`: 334 m with the
 target BEHIND the vehicle, which must pivot, cross the field and stop.  The

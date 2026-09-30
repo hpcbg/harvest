@@ -95,6 +95,8 @@ harvest/
     ├── test_ros_contract.py  #   ROS topic contract (no ROS required)
     ├── test_isaac_contract.py #  Sim wire contract + shared motion core (no Isaac required)
     ├── test_isaac_robots.py   #  Robot registry, steering, WebRTC config, Isaac diagnostics
+    ├── test_isaac_scene.py    #  Isaac spectator-camera framing, task-state colours
+    ├── test_config_profile.py #  HARVEST_CONFIG_PROFILE overlay, the Isaac fast-demo profile
     ├── test_live_tasks.py     #  Live task layer: HARVEST schedules, the simulator reports
     ├── test_telemetry.py      #  Real telemetry: parsing, normalisation, replay, FIWARE
     ├── test_telemetry_kpi.py  #  Mission KPIs, provenance, real vs model, export, API

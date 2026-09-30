@@ -39,6 +39,9 @@ services:
       HARVEST_HOST: 0.0.0.0
       HARVEST_NO_BROWSER: "1"
       HARVEST_FLEET_BACKEND: ${HARVEST_FLEET_BACKEND:-sim}
+      # Optional scenario profile merged over config.yaml (unset = default
+      # farm); e.g. examples/isaac_fast_demo.yaml.  farm-sim gets the same one.
+      HARVEST_CONFIG_PROFILE: ${HARVEST_CONFIG_PROFILE:-}
       HARVEST_MODBUS_HOST: farm-sim
       HARVEST_OPCUA_ENDPOINT: opc.tcp://farm-sim:4840/harvest/
       # Real ZETRABOT telemetry (inbound only).  The repo is bind-mounted at
@@ -73,6 +76,8 @@ services:
     working_dir: /harvest
     volumes:
       - .:/harvest
+    environment:
+      HARVEST_CONFIG_PROFILE: ${HARVEST_CONFIG_PROFILE:-}
     expose:
       - "5020"   # Modbus TCP
       - "4840"   # OPC-UA

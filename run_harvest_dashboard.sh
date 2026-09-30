@@ -59,6 +59,9 @@
 # Environment overrides:
 #   HARVEST_PORT (8765) | ORION_PORT (1026) | ROS_DOMAIN_ID (42)
 #   HARVEST_READY_TIMEOUT (120) seconds per health gate before failing
+#   HARVEST_CONFIG_PROFILE  optional YAML merged over config.yaml for this run
+#                (unset = the default farm), e.g. examples/isaac_fast_demo.yaml
+#                — the one-minute Isaac Sim documentation demo
 #   isaac mode:  HARVEST_ISAAC_AUTOSTART (1) | HARVEST_ISAAC_VIEW_MODE
 #                (desktop|webrtc|none) | HARVEST_ISAAC_STREAMING |
 #                HARVEST_ISAAC_HEADLESS | HARVEST_ISAAC_STREAM_HOST |

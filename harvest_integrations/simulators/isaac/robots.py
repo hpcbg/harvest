@@ -416,7 +416,7 @@ def _build_procedural(stage, prim_path: str, model: RobotModel,
     # The hull: the visible body and the chassis collider, scaled inside the
     # unscaled body frame where scaling is harmless.
     _add_box(stage, f"{chassis_path}/hull", (length, width, height),
-             (0.0, 0.0, 0.0), model.colors.get("body") or [0.16, 0.42, 0.2],
+             (0.0, 0.0, 0.0), model.colors.get("body") or [0.90, 0.90, 0.86],
              collision=True)
 
     # THE ARTICULATION ROOT GOES ON THE CHASSIS RIGID BODY, and this one line is
@@ -451,7 +451,7 @@ def _build_procedural(stage, prim_path: str, model: RobotModel,
         _add_box(stage, f"{chassis_path}/bed",
                  (length * 0.34, width * 0.86, 0.22),
                  (length * 0.30, 0.0, height / 2.0 + 0.11),
-                 model.colors.get("body") or [0.16, 0.42, 0.2], collision=False)
+                 model.colors.get("body") or [0.90, 0.90, 0.86], collision=False)
         # The beacon is RECOLOURED AT RUNTIME to show what the tractor is busy
         # with (travelling / working / charging / idle) -- see
         # TractorRobot.set_activity_colour.  At field scale it is also what makes

@@ -1,0 +1,129 @@
+# HARVEST — FAST DOCUMENTATION DEMO profile for the Isaac Sim layer.
+#
+# NOT the scientific scenario.  config.yaml is the farm the KPI results, the
+# scenario comparison and the ROI analysis are quoted from, and this file does
+# not touch it: it is an optional PROFILE, merged on top only when
+# HARVEST_CONFIG_PROFILE names it.  Unset the variable and nothing here exists.
+#
+# WHAT IT IS FOR: showing the whole loop in about a minute of real Isaac Sim --
+#   HARVEST scheduler -> ROS 2 -> Isaac Sim -> physical movement
+#                     -> task / charging telemetry -> HARVEST
+# -- for a recording, a review or a live demonstration.  On the normal farm one
+# task takes two to three minutes to reach and work; here it takes about fifteen
+# seconds, because the farm is small and the jobs are short.  Nothing about HOW
+# it happens is different: the same scheduler assigns the tasks, the tractors
+# drive under physics at the normal speed, and the work timer is the normal
+# one second per task minute.  Only the farm and the day's work are smaller.
+#
+# HOW TO RUN IT (Isaac first, so it is already listening when the stack starts):
+#
+#   HARVEST_ISAAC_VIEW_MODE=webrtc ./scripts/run_isaac_sim.sh      # wait for READY
+#   HARVEST_CONFIG_PROFILE=examples/isaac_fast_demo.yaml \
+#   HARVEST_ISAAC_AUTOSTART=0 ./run_harvest_dashboard.sh isaac
+#
+# The farm clock starts at 08:00 and runs at 60x, and the work below opens at
+# 09:00 -- one minute after the stack starts.  That minute is deliberate: it lets
+# the ROS 2 bridge connect first, so the tasks are executed PHYSICALLY rather
+# than advanced by HARVEST's own clock while no simulator is attached.
+#
+#   09:00   HARVEST assigns the three nearer tasks (A), one per tractor
+#   +~5 s   the tractors arrive and work for 5 / 7 / 9 s
+#   +~15 s  each finished tractor is assigned the next task on its track (B)
+#   +~35 s  all six tasks completed
+#
+# Then send a tractor to charge through the normal fleet API, e.g.
+#   curl -X POST localhost:8765/api/fleet/command \
+#     -d '{"commands":[{"type":"request_charge","target_id":"tractor_3"}]}'
+# HARVEST allocates charger_1, the one at the end of tractor_3's track.
+#
+# THE LAYOUT, in metres (x east, y north): three tracks that converge on the
+# charging area.
+#
+#   T1 (13,76)                                     every task lies on the straight
+#        `--> A1 (37,66)                           line from its tractor's start to
+#                  `--> B1 (61,55)                 the chargers
+#   T2 (6,42) ---> A2 (32,42) ---> B2 (58,42)      charger_2 (90,45)
+#                  ,--> B3 (61,29)                 charger_1 (90,39)
+#        ,--> A3 (37,18)
+#   T3 (13,8)
+#
+# WHY TRACKS AND NOT A GRID -- measured, on the first version of this file.  The
+# proxy is a four-wheel skid-steer vehicle: pointed within about 6 degrees of its
+# target it covers 20 m in 4 s, and asked to turn while driving it crawls at
+# 0.3-0.8 m/s (the tyres scrub; see "Notes for the next person" in the Isaac
+# README).  A tractor is built facing the charging area, so a parallel-row grid
+# left the outer tractor 17 degrees off its row and 25 s late, which changed the
+# order the tractors came free, which sent each of them to a task in another
+# row.  With every task on a line through the charging area, each tractor starts
+# out already pointing down its own track and every leg is straight.
+#
+# The chargers are approached from the west; their posts stand on the north side
+# of the pads, out of the way.
+
+farm:
+  map:
+    width_m: 100
+    height_m: 85
+
+# Same three tractors and the same states of charge as config.yaml; only where
+# they start.  (Lists replace the base list whole, so every field is repeated.)
+tractors:
+  fleet:
+  - id: tractor_1
+    initial_soc_percent: 80
+    initial_location: {x: 13.3, y: 76.2}
+    enabled: true
+    has_pv_roof: true
+  - id: tractor_2
+    initial_soc_percent: 55
+    initial_location: {x: 6.0, y: 42.0}
+    enabled: true
+    has_pv_roof: true
+  - id: tractor_3
+    initial_soc_percent: 30
+    initial_location: {x: 13.3, y: 7.8}
+    enabled: true
+    has_pv_roof: true
+
+charging:
+  stations:
+  - id: charger_1
+    location: {x: 90, y: 39}
+    max_power_kw: 6.6
+  - id: charger_2
+    location: {x: 90, y: 45}
+    max_power_kw: 6.6
+
+# A fixed, short list of work instead of the generated day.  HARVEST's scheduler
+# still decides who does what: it orders the open tasks by priority and
+# deadline and gives each to the best-scoring free tractor.  The deadlines below
+# only fix the ORDER it considers them in, and the A durations (5 / 7 / 9) the
+# order the tractors come free, so each tractor's next task is on its own track.
+task_generation:
+  mode: static
+
+tasks:
+- {id: task_001, name: Tool delivery A,    location: {x: 37.0, y: 65.6},
+   earliest_start: '2026-06-01 09:00:00', latest_finish: '2026-06-01 11:00:00',
+   duration_minutes: 5, distance_km: 0.03, priority: normal, can_wait: true,
+   uses_pto: false, pto_power_kw: 0.0}
+- {id: task_002, name: Inspection route A, location: {x: 32.0, y: 42.0},
+   earliest_start: '2026-06-01 09:00:00', latest_finish: '2026-06-01 11:05:00',
+   duration_minutes: 7, distance_km: 0.03, priority: normal, can_wait: true,
+   uses_pto: false, pto_power_kw: 0.0}
+- {id: task_003, name: Transport boxes A,  location: {x: 37.0, y: 18.4},
+   earliest_start: '2026-06-01 09:00:00', latest_finish: '2026-06-01 11:10:00',
+   duration_minutes: 9, distance_km: 0.03, priority: normal, can_wait: true,
+   uses_pto: false, pto_power_kw: 0.0}
+- {id: task_004, name: Tool delivery B,    location: {x: 60.8, y: 55.0},
+   earliest_start: '2026-06-01 09:00:00', latest_finish: '2026-06-01 11:30:00',
+   duration_minutes: 7, distance_km: 0.03, priority: normal, can_wait: true,
+   uses_pto: false, pto_power_kw: 0.0}
+- {id: task_005, name: Inspection route B, location: {x: 58.0, y: 42.0},
+   earliest_start: '2026-06-01 09:00:00', latest_finish: '2026-06-01 11:35:00',
+   duration_minutes: 6, distance_km: 0.03, priority: normal, can_wait: true,
+   uses_pto: false, pto_power_kw: 0.0}
+- {id: task_006, name: Transport boxes B,  location: {x: 60.8, y: 29.0},
+   earliest_start: '2026-06-01 09:00:00', latest_finish: '2026-06-01 11:40:00',
+   duration_minutes: 5, distance_km: 0.03, priority: normal, can_wait: true,
+   uses_pto: false, pto_power_kw: 0.0}

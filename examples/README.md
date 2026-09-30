@@ -15,6 +15,11 @@ HARVEST integration stack.  Start the stack first:
 | `isaac_sim_demo.py` | The Isaac Sim demonstrator: command a charge over the fleet API, watch the simulator drive the tractor to its charger and dock (start `isaac-demo` mode first, or `isaac` + `scripts/run_isaac_sim.sh`) |
 | `telemetry_replay_demo.py` | Watching the real ZETRABOT mission replay: `GET /api/telemetry` (canonical state + replay progress), the replayed tractor in the fleet snapshot, and the `TractorTelemetry` NGSI-LD entity when a broker is up (start with `./run_harvest_dashboard.sh replay --file telemetry/telemetria_mision_63.csv --speed 20 [--stack fiware]`) |
 
+`isaac_fast_demo.yaml` is not a script but a configuration **profile**: a compact
+farm with six short jobs that shows the whole HARVEST → ROS 2 → Isaac Sim loop in
+about a minute. Select it with `HARVEST_CONFIG_PROFILE=examples/isaac_fast_demo.yaml`
+(its header has the commands); `config.yaml` is not modified.
+
 Each script takes `--help`.  ROS 2 equivalents of `fleet_api_demo.py` are the
 `/harvest/*` topics inside the `ros2-bridge` container (`full` mode), e.g.:
 

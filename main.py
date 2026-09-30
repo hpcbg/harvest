@@ -1873,6 +1873,54 @@ def load_yaml(path: str | Path) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
+#: Environment variable naming an optional PROFILE: one more YAML file
+#: deep-merged on top of config.yaml (+ config.local.yaml).  Unset -- the
+#: default -- nothing changes.  It exists so a purpose-built scenario (e.g.
+#: examples/isaac_fast_demo.yaml, the short Isaac Sim documentation demo) can be
+#: run without editing config.yaml, whose numbers the KPI results are quoted from.
+CONFIG_PROFILE_ENV = "HARVEST_CONFIG_PROFILE"
+
+
+def deep_merge_config(base: dict, override: dict) -> dict:
+    """``override`` on top of ``base``: dicts merge key by key, anything else
+    (lists included) is replaced whole."""
+    import copy
+
+    result = copy.deepcopy(base)
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = deep_merge_config(result[k], v)
+        else:
+            result[k] = copy.deepcopy(v)
+    return result
+
+
+def apply_config_profile(config: Dict[str, Any],
+                         base_dir: str | Path = ".") -> Dict[str, Any]:
+    """Merge the profile named by ``HARVEST_CONFIG_PROFILE``, if any.
+
+    A relative path is resolved against ``base_dir`` (the directory holding
+    config.yaml).  A profile that is named but missing is an error rather than
+    a silent fall-back to the default scenario: whoever set the variable is
+    expecting a different farm, and running the wrong one quietly is worse than
+    not starting.
+    """
+    import os
+
+    name = os.environ.get(CONFIG_PROFILE_ENV, "").strip()
+    if not name:
+        return config
+    profile_path = Path(name)
+    if not profile_path.is_absolute():
+        profile_path = Path(base_dir) / profile_path
+    if not profile_path.exists():
+        raise FileNotFoundError(
+            f"{CONFIG_PROFILE_ENV}={name!r}: no such profile ({profile_path})")
+    profile = load_yaml(profile_path) or {}
+    print(f"  [config] Applied profile {profile_path.name} ({CONFIG_PROFILE_ENV})")
+    return deep_merge_config(config, profile)
+
+
 def load_yaml_with_local(path: str | Path) -> Dict[str, Any]:
     """
     Load config.yaml and deep-merge config.local.yaml on top if it exists.
@@ -1888,31 +1936,21 @@ def load_yaml_with_local(path: str | Path) -> Dict[str, Any]:
             model_path: models/harvest_nn_hu50_ep2000_dropNone.keras
         task_generation:
           num_tasks: 10
+
+    A profile named by ``HARVEST_CONFIG_PROFILE`` is merged last; see
+    :func:`apply_config_profile`.
     """
-    import copy
-
     base = load_yaml(path)
+    base_dir = Path(path).parent
 
-    local_path = Path(path).parent / "config.local.yaml"
-    if not local_path.exists():
-        return base
-
-    local = load_yaml(local_path)
+    local_path = base_dir / "config.local.yaml"
+    local = load_yaml(local_path) if local_path.exists() else None
     if not local:
-        return base
+        return apply_config_profile(base, base_dir)
 
-    def _deep_merge(base: dict, override: dict) -> dict:
-        result = copy.deepcopy(base)
-        for k, v in override.items():
-            if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-                result[k] = _deep_merge(result[k], v)
-            else:
-                result[k] = copy.deepcopy(v)
-        return result
-
-    merged = _deep_merge(base, local)
+    merged = deep_merge_config(base, local)
     print(f"  [config] Loaded overrides from config.local.yaml")
-    return merged
+    return apply_config_profile(merged, base_dir)
 
 
 # ============================================================
